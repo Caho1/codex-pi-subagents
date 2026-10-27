@@ -10,8 +10,8 @@ export function createMcpServer(mgr: AgentManager, panelUrl: string) {
 
 	server.registerTool(
 		"pi_list_models",
-		{ description: "List Pi models that have credentials. Use the returned `provider/model` id with pi_spawn_agent." },
-		async () => json(await mgr.listModels()),
+		{ description: "List Pi models that have credentials. Use the returned `provider/model` id with pi_spawn_agent.", inputSchema: { include_faux: z.boolean().optional().describe("Include offline faux models when enabled on the server") } },
+		async ({ include_faux }) => json(await mgr.listModels(include_faux)),
 	);
 
 	server.registerTool(
@@ -23,9 +23,9 @@ export function createMcpServer(mgr: AgentManager, panelUrl: string) {
 				"Then call pi_wait to collect results. Spawn several for parallel work.",
 			inputSchema: {
 				task: z.string().describe("Full brief for the subagent"),
-				model: z.string().optional().describe("`provider/model` from pi_list_models; default = first available"),
+				model: z.string().optional().describe("`provider/model` from pi_list_models; default = explicit model, then panel preference, then first available"),
 				thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
-				cwd: z.string().optional().describe("Absolute working directory; default = server cwd"),
+				cwd: z.string().optional().describe("Absolute working directory; default = server cwd. Pi sessions do not inherit the Codex sandbox"),
 				name: z.string().optional().describe("Short label shown in the panel"),
 				tools: z.enum(["coding", "read-only"]).optional().describe("read-only = read/grep/find/ls only"),
 			},
@@ -45,8 +45,8 @@ export function createMcpServer(mgr: AgentManager, panelUrl: string) {
 				timeout_sec: z.number().min(1).max(240).optional().describe("Default 120; keep under Codex tool_timeout_sec"),
 			},
 		},
-		async ({ ids, mode, timeout_sec }) => {
-			const r = await mgr.wait(ids, mode ?? "all", (timeout_sec ?? 120) * 1000);
+		async ({ ids, mode, timeout_sec }, extra) => {
+			const r = await mgr.wait(ids, mode ?? "all", (timeout_sec ?? 120) * 1000, extra.signal);
 			return json({ timedOut: r.timedOut, agents: r.agents.map(view) });
 		},
 	);
@@ -57,7 +57,7 @@ export function createMcpServer(mgr: AgentManager, panelUrl: string) {
 			description: "Status, final answer and recent log of one subagent.",
 			inputSchema: { id: z.string(), log_lines: z.number().min(0).max(200).optional() },
 		},
-		async ({ id, log_lines }) => json({ ...view(mgr.get(id).info), log: mgr.logOf(id).slice(-(log_lines ?? 20)) }),
+		async ({ id, log_lines }) => json({ ...view(mgr.get(id).info), log: log_lines === 0 ? [] : mgr.logOf(id).slice(-(log_lines ?? 20)) }),
 	);
 
 	server.registerTool(
