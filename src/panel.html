@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pi Subagents</title>
+<style>
+	:root { color-scheme: light dark; --bd: #8884; --mut: #888; font: 13px/1.45 ui-sans-serif, system-ui, sans-serif; }
+	body { margin: 0; display: grid; grid-template-columns: minmax(220px, 34%) 1fr; height: 100vh; }
+	aside { border-right: 1px solid var(--bd); overflow: auto; }
+	header { padding: 10px 12px; font-weight: 600; border-bottom: 1px solid var(--bd); display: flex; justify-content: space-between; }
+	.item { padding: 8px 12px; border-bottom: 1px solid var(--bd); cursor: pointer; }
+	.item.sel { background: #8882; }
+	.row { display: flex; gap: 6px; align-items: center; }
+	.name { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.mut { color: var(--mut); font-size: 12px; }
+	.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+	.running { background: #3b82f6; animation: p 1s infinite alternate; } .idle { background: #22c55e; }
+	.error { background: #ef4444; } .aborted { background: #a3a3a3; }
+	@keyframes p { to { opacity: .3 } }
+	main { display: flex; flex-direction: column; min-width: 0; }
+	#log { flex: 1; overflow: auto; padding: 12px; }
+	.l { margin: 0 0 8px; white-space: pre-wrap; word-break: break-word; }
+	.l b { font-size: 11px; text-transform: uppercase; color: var(--mut); margin-right: 6px; }
+	.l.tool { font-family: ui-monospace, monospace; font-size: 12px; color: var(--mut); }
+	.l.error, .l.tool-error { color: #ef4444; }
+	#draft { color: var(--mut); white-space: pre-wrap; }
+	form { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--bd); }
+	input { flex: 1; padding: 6px 8px; } button { padding: 6px 10px; }
+	.empty { padding: 24px; color: var(--mut); }
+</style>
+</head>
+<body>
+<aside><header><span>Pi Subagents</span><span class="mut" id="count"></span></header><div id="list"></div></aside>
+<main>
+	<header id="title"><span>选择一个 agent</span></header>
+	<div id="log"><div class="empty">Codex 通过 MCP 工具 pi_spawn_agent 启动的 Pi agent 会出现在左侧。</div></div>
+	<form id="f" hidden><input id="msg" placeholder="追加指令（follow-up）" /><button>发送</button><button type="button" id="abort">中止</button></form>
+</main>
+<script>
+const agents = new Map(); let sel = location.hash.slice(1) || null; let lines = []; let draft = "";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+const ago = (t) => { const s = Math.round((Date.now() - t) / 1000); return s < 60 ? s + "s" : Math.round(s / 60) + "m"; };
+
+function renderList() {
+	const all = [...agents.values()].sort((a, b) => b.createdAt - a.createdAt);
+	$("count").textContent = `${all.filter((a) => a.status === "running").length} running / ${all.length}`;
+	$("list").innerHTML = all.map((a) => `<div class="item ${a.id === sel ? "sel" : ""}" data-id="${a.id}">
+		<div class="row"><span class="dot ${a.status}"></span><span class="name">${esc(a.name)}</span><span class="mut">${ago(a.createdAt)}</span></div>
+		<div class="mut">${esc(a.model)} · ${a.status} · ${a.tokens.input + a.tokens.output} tok${a.cost ? " · $" + a.cost.toFixed(4) : ""}</div>
+		<div class="mut" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.task)}</div></div>`).join("");
+}
+function renderDetail() {
+	const a = agents.get(sel); $("f").hidden = !a; if (!a) return;
+	$("title").innerHTML = `<span><span class="dot ${a.status}" style="display:inline-block"></span> ${esc(a.name)} <span class="mut">${esc(a.model)} · ${esc(a.cwd)}</span></span><span class="mut">${a.id}</span>`;
+	$("log").innerHTML = lines.map((l) => `<p class="l ${l.kind}"><b>${l.kind}</b>${esc(l.text)}</p>`).join("") + `<div id="draft">${esc(draft)}</div>`;
+	$("log").scrollTop = 1e9;
+}
+async function select(id) {
+	sel = id; location.hash = id; draft = "";
+	lines = (await (await fetch(`/api/agents/${id}`)).json()).log ?? [];
+	renderList(); renderDetail();
+}
+$("list").onclick = (e) => { const it = e.target.closest(".item"); if (it) select(it.dataset.id); };
+$("f").onsubmit = async (e) => { e.preventDefault(); const message = $("msg").value.trim(); if (!message) return; $("msg").value = "";
+	await fetch(`/api/agents/${sel}/followup`, { method: "POST", body: JSON.stringify({ message }) }); };
+$("abort").onclick = () => fetch(`/api/agents/${sel}/abort`, { method: "POST" });
+
+const es = new EventSource("/api/events");
+es.addEventListener("snapshot", (e) => { JSON.parse(e.data).forEach((a) => agents.set(a.id, a)); renderList(); if (sel && agents.has(sel)) select(sel); });
+es.addEventListener("agent", (e) => { const a = JSON.parse(e.data); agents.set(a.id, a); renderList(); if (a.id === sel) renderDetail(); });
+es.addEventListener("log", (e) => { const { id, line } = JSON.parse(e.data); if (id === sel) { lines.push(line); if (line.kind === "assistant") draft = ""; renderDetail(); } });
+es.addEventListener("delta", (e) => { const { id, delta } = JSON.parse(e.data); if (id === sel) { draft += delta; renderDetail(); } });
+setInterval(renderList, 10000);
+</script>
+</body>
+</html>

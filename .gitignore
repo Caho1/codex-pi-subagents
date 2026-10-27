@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.*
+# runtime data (if --data points inside the repo)
+agents.json
+agents.json.tmp
+sessions/
+*.jsonl
+*.log

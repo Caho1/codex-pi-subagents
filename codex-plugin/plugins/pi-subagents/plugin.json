@@ -1,0 +1,16 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "pi-subagents",
+  "version": "0.1.0",
+  "description": "Run Codex subagents on Pi, with any model Pi supports, plus a live web panel.",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Pi Subagents",
+        "shortDescription": "Delegate subtasks to Pi agents on any model",
+        "category": "Coding",
+        "defaultPrompt": ["Use Pi subagents to review this branch in parallel."]
+      }
+    }
+  }
+}

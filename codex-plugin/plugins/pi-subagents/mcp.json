@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "pi-subagents": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:7788/mcp"
+    }
+  }
+}
