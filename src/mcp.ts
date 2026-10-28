@@ -7,6 +7,20 @@ const json = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.st
 export function createMcpServer(mgr: AgentManager, panelUrl: string) {
 	const server = new McpServer({ name: "pi-subagents", version: "0.1.0" });
 	const view = (a: AgentInfo) => ({ ...a, panel: `${panelUrl}/#${a.id}` });
+	// Codex attaches threadId to MCP request metadata, outside model-supplied
+	// tool arguments. Fail closed when the host does not provide that identity.
+	const thread = (meta: Record<string, unknown> | undefined) => {
+		const id = meta?.threadId;
+		if (typeof id !== "string" || !id.trim() || id.length > 256) throw new Error("Codex conversation metadata is missing; reconnect from a Codex conversation");
+		return id;
+	};
+	const owned = (threadId: string, id: string) => {
+		const live = mgr.get(id);
+		// Do not reveal whether an id belongs to another conversation.
+		if (live.info.codexThreadId !== threadId) throw new Error(`unknown agent ${id}`);
+		return live;
+	};
+	const agentsFor = (threadId: string) => mgr.list().filter((a) => a.codexThreadId === threadId);
 
 	server.registerTool(
 		"pi_list_models",
@@ -20,7 +34,9 @@ export function createMcpServer(mgr: AgentManager, panelUrl: string) {
 			description:
 				"Start a Pi subagent on a self-contained task and return immediately with its id. " +
 				"The child does not see this conversation: include goal, scope, constraints and expected output. " +
-				"Then call pi_wait to collect results. Spawn several for parallel work.",
+				"First check pi_list_agents and prefer pi_send_followup on a suitable completed agent for related work. " +
+				"Spawn new agents for independent parallel work or incompatible model, working directory or tools. " +
+				"Then call pi_wait to collect results.",
 			inputSchema: {
 				task: z.string().describe("Full brief for the subagent"),
 				model: z.string().optional().describe("`provider/model` from pi_list_models; default = explicit model, then panel preference, then first available"),
@@ -30,7 +46,7 @@ export function createMcpServer(mgr: AgentManager, panelUrl: string) {
 				tools: z.enum(["coding", "read-only"]).optional().describe("read-only = read/grep/find/ls only"),
 			},
 		},
-		async (args) => json(view(await mgr.spawn(args))),
+		async (args, extra) => json(view(await mgr.spawn({ ...args, codexThreadId: thread(extra._meta) }))),
 	);
 
 	server.registerTool(
@@ -46,7 +62,11 @@ export function createMcpServer(mgr: AgentManager, panelUrl: string) {
 			},
 		},
 		async ({ ids, mode, timeout_sec }, extra) => {
-			const r = await mgr.wait(ids, mode ?? "all", (timeout_sec ?? 120) * 1000, extra.signal);
+			const threadId = thread(extra._meta);
+			const targets = ids?.length ? ids : agentsFor(threadId).filter((a) => a.status === "running").map((a) => a.id);
+			for (const id of targets) owned(threadId, id);
+			if (!targets.length) return json({ timedOut: false, agents: [] });
+			const r = await mgr.wait(targets, mode ?? "all", (timeout_sec ?? 120) * 1000, extra.signal);
 			return json({ timedOut: r.timedOut, agents: r.agents.map(view) });
 		},
 	);
@@ -57,7 +77,7 @@ export function createMcpServer(mgr: AgentManager, panelUrl: string) {
 			description: "Status, final answer and recent log of one subagent.",
 			inputSchema: { id: z.string(), log_lines: z.number().min(0).max(200).optional() },
 		},
-		async ({ id, log_lines }) => json({ ...view(mgr.get(id).info), log: log_lines === 0 ? [] : mgr.logOf(id).slice(-(log_lines ?? 20)) }),
+		async ({ id, log_lines }, extra) => json({ ...view(owned(thread(extra._meta), id).info), log: log_lines === 0 ? [] : mgr.logOf(id).slice(-(log_lines ?? 20)) }),
 	);
 
 	server.registerTool(
@@ -66,19 +86,28 @@ export function createMcpServer(mgr: AgentManager, panelUrl: string) {
 			description: "Send another instruction to an existing subagent (keeps its context). Queued if it is still running.",
 			inputSchema: { id: z.string(), message: z.string() },
 		},
-		async ({ id, message }) => json(view(await mgr.followup(id, message))),
+		async ({ id, message }, extra) => {
+			owned(thread(extra._meta), id);
+			return json(view(await mgr.followup(id, message)));
+		},
 	);
 
 	server.registerTool(
 		"pi_abort",
 		{ description: "Stop a running subagent.", inputSchema: { id: z.string() } },
-		async ({ id }) => json(view(await mgr.abort(id))),
+		async ({ id }, extra) => {
+			owned(thread(extra._meta), id);
+			return json(view(await mgr.abort(id)));
+		},
 	);
 
 	server.registerTool(
 		"pi_list_agents",
-		{ description: "All subagents with status. Also returns the web panel URL to show the user." },
-		async () => json({ panel: panelUrl, agents: mgr.list().map(view) }),
+		{ description: "List only this Codex conversation's Pi subagents, including each agent's latest accepted task, status, result, model and working directory. Prefer an idle matching agent for related follow-up work." },
+		async (_extra) => {
+			const threadId = thread(_extra._meta);
+			return json({ panel: panelUrl, codexThreadId: threadId, agents: agentsFor(threadId).sort((a, b) => b.updatedAt - a.updatedAt).map(view) });
+		},
 	);
 
 	return server;

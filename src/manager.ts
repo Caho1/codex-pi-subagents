@@ -19,6 +19,10 @@ export interface AgentInfo {
 	id: string;
 	name: string;
 	task: string;
+	/** Codex conversation that owns this agent. Absent on legacy panel-only records. */
+	codexThreadId?: string;
+	/** Most recently accepted task or follow-up, whether or not it has completed. */
+	lastTask?: string;
 	model: string;
 	thinking: ThinkingLevel;
 	cwd: string;
@@ -36,7 +40,7 @@ export interface AgentInfo {
 
 export interface LogLine { t: number; kind: string; text: string }
 
-interface Live { info: AgentInfo; session?: AgentSession; opening?: Promise<void>; log: LogLine[]; draft: string; lastError?: string; settledAborted?: boolean; pending?: Set<Promise<void>>; stopping?: Promise<void>; abortOnStart?: Promise<void>; revision: number }
+interface Live { info: AgentInfo; session?: AgentSession; opening?: Promise<void>; log: LogLine[]; draft: string; lastError?: string; earlierTurnError?: string; settledAborted?: boolean; pending?: Set<Promise<void>>; preflightTail?: Promise<void>; activeSubmission?: Promise<void>; stopping?: Promise<void>; abortOnStart?: Promise<void>; revision: number }
 
 const READ_ONLY = ["read", "grep", "find", "ls"];
 const MAX_LOG = 500;
@@ -89,7 +93,7 @@ export class AgentManager extends EventEmitter {
 		return a;
 	}
 
-	async spawn(opts: { task: string; model?: string; thinking?: ThinkingLevel; cwd?: string; name?: string; tools?: ToolPreset }) {
+	async spawn(opts: { task: string; codexThreadId?: string; model?: string; thinking?: ThinkingLevel; cwd?: string; name?: string; tools?: ToolPreset }) {
 		const model = await this.resolveModel(opts.model);
 		const id = randomUUID().slice(0, 8);
 		const cwd = opts.cwd ?? process.cwd();
@@ -97,6 +101,8 @@ export class AgentManager extends EventEmitter {
 			id,
 			name: opts.name ?? `pi-${id}`,
 			task: opts.task,
+			codexThreadId: opts.codexThreadId,
+			lastTask: opts.task,
 			model: `${model.provider}/${model.id}`,
 			thinking: opts.thinking ?? "medium",
 			cwd,
@@ -182,23 +188,51 @@ export class AgentManager extends EventEmitter {
 	detail(id: string) { const a = this.get(id); return { ...a.info, log: [...a.log], draft: a.draft, revision: a.revision }; }
 
 	private run(live: Live, text: string) {
-		this.onPrompt();
-		if (live.info.status !== "running") live.settledAborted = false;
+		if (live.info.status !== "running") {
+			live.settledAborted = false;
+			live.lastError = undefined;
+			live.earlierTurnError = undefined;
+		}
 		this.push(live, "user", text);
-		live.lastError = undefined;
-		this.update(live, { status: "running", error: undefined, result: undefined });
+		this.update(live, { status: "running", lastTask: text, error: undefined, result: undefined });
 		const pending = live.pending ??= new Set();
-		const submission = live.session!.prompt(text, { streamingBehavior: "followUp" });
+		// Pi input handlers run before the session becomes busy. Serialize just this
+		// preflight so later inputs can still enter Pi's native follow-up queue.
+		const previous = live.preflightTail ?? Promise.resolve();
+		let releasePreflight!: () => void;
+		const preflight = new Promise<void>((resolve) => { releasePreflight = resolve; });
+		live.preflightTail = preflight;
+		const submission = previous.then(async () => {
+			// A run can be settling after isStreaming becomes false. Let it finish
+			// before starting another prompt instead of dispatching into that gap.
+			const active = live.activeSubmission;
+			if (!live.session!.isStreaming && active) await active.catch(() => {});
+			if (live.stopping) return; // abort also discards inputs waiting in this queue
+			this.onPrompt();
+			const prompt = live.session!.prompt(text, {
+				streamingBehavior: "followUp",
+				preflightResult: (disposition) => {
+					if (disposition === "started") live.activeSubmission = submission;
+					releasePreflight();
+				},
+			});
+			await Promise.all([prompt, preflight]);
+		}).finally(releasePreflight);
 		pending.add(submission);
 		void submission.catch((err: unknown) => { live.lastError = String((err as Error)?.message ?? err); })
-			.finally(() => { pending.delete(submission); void this.settle(live); });
+			.finally(() => {
+				pending.delete(submission);
+				if (live.preflightTail === preflight) live.preflightTail = undefined;
+				if (live.activeSubmission === submission) live.activeSubmission = undefined;
+				void this.settle(live);
+			});
 	}
 
 	private async settle(live: Live) {
 		await live.session!.waitForIdle();
 		if (live.stopping || live.pending?.size || live.info.status !== "running") return;
 		if (live.settledAborted) this.update(live, { status: "aborted" });
-		else if (live.lastError) this.update(live, { status: "error", error: live.lastError });
+		else if (live.earlierTurnError || live.lastError) this.update(live, { status: "error", error: live.earlierTurnError ?? live.lastError });
 		else this.update(live, { status: "idle", result: live.session!.getLastAssistantText() });
 	}
 
@@ -216,6 +250,11 @@ export class AgentManager extends EventEmitter {
 					live.abortOnStart = live.session!.abort();
 					void live.abortOnStart.catch(() => {});
 				}
+				break;
+			case "message_start":
+				// A new user turn after a model error means the failed turn was not
+				// recovered by Pi's retry; later follow-up success must not hide it.
+				if (e.message.role === "user" && live.lastError) live.earlierTurnError ??= live.lastError;
 				break;
 			case "message_update":
 				if (e.assistantMessageEvent.type === "text_delta") {

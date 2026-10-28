@@ -18,8 +18,11 @@ Codex 原生子 agent 只能沿用父会话的 model provider（自定义 agent 
 
 - MCP 工具：`pi_list_models`、`pi_spawn_agent`、`pi_wait`、`pi_get_agent`、`pi_send_followup`、`pi_abort`、`pi_list_agents`
 - 多个 Pi 会话在同一进程并发运行，每个会话可指定模型、thinking 等级、工作目录，工具可选 `coding` 或 `read-only` 两种预设
+- Codex 通过 MCP 请求元数据中的 `threadId` 关联子 agent：`pi_list_agents`、详情、等待、追问和中止只允许访问当前对话的 agent；缺少该字段时拒绝访问。`lastTask` 是最近接收的任务或追问，`codexThreadId` 是所属对话
+- Codex 对相关后续工作优先复用当前对话中工作目录、模型和工具权限合适的已完成 agent；需要不同配置或独立并行时新建。是否复用由 Codex 根据任务决定
 - 会话以 JSONL 持久化；服务重启后面板日志从 JSONL 恢复，follow-up 可以接着原来的上下文继续
-- Web 面板：agent 列表、状态、token 和费用、实时输出、工具调用，可发送 follow-up 或中止；左下角可切换默认模型（`spawn` 未指定 model 时优先生效，持久化到 `--data` 目录）
+- `pi_wait` 返回最近一条回答；有多次追问时可用 `pi_get_agent` 查看此前记录。若前一轮失败且后续排队追问成功，最终状态仍保留 `error`；Pi 对同一轮的自动重试成功则可正常完成
+- Web 面板：查看 agent 列表、状态、token 和费用、实时输出、工具调用，并可中止任务；左下角可切换默认模型（`spawn` 未指定 model 时优先生效，持久化到 `--data` 目录）。追问由 Codex 通过 `pi_send_followup` 发起
 - Codex 插件：打包 MCP 配置和一个 skill，skill 告诉 Codex 何时以及如何委派给 Pi
 - `--faux` 离线假模型：不需要任何 API key 就能跑通整条链路
 
@@ -45,6 +48,8 @@ SMOKE_FAUX=1 MCP_URL=http://127.0.0.1:7789/mcp npm run smoke -- /path/to/project
 面板和默认 `pi_list_models` 只显示真实模型。服务启用 `--faux` 后，可调用 `pi_list_models` 并传入 `include_faux: true` 查看离线测试模型。
 
 面板地址是 http://127.0.0.1:7788 ，每个工具结果里都带 `panel` 链接。
+
+旧版本创建且没有 `codexThreadId` 的历史 agent 无法可靠归属到某个 Codex 对话，因此不会出现在 Codex 的 MCP 列表中，也不能通过 MCP 操作；面板仍可查看它们。MCP 过滤依赖 Codex 客户端提供的元数据，是会话范围控制，不是身份认证；本地面板仍显示所有会话，且本服务无鉴权，不应向不可信客户端或公网开放。
 
 ## 模型：DeepSeek
 

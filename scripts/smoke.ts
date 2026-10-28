@@ -1,6 +1,7 @@
 // End-to-end check over real MCP (streamable HTTP): spawn two agents on different models, wait, follow up.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { randomUUID } from "node:crypto";
 
 const url = process.env.MCP_URL ?? "http://127.0.0.1:7788/mcp";
 const cwd = process.argv[2] ?? process.cwd();
@@ -8,9 +9,12 @@ const fauxOnly = process.env.SMOKE_FAUX === "1";
 const TASK = process.env.TASK ?? "Use the read tool to read README.md in the working directory, then summarize it in 3 short bullet points.";
 const FOLLOWUP = process.env.FOLLOWUP ?? "Follow-up: in one sentence, which Node.js version does it require, and where did you see that?";
 const client = new Client({ name: "smoke", version: "0" });
+// This direct MCP client is not a Codex conversation; use a fresh synthetic
+// thread for the smoke run instead of accessing a real conversation's agents.
+const threadId = randomUUID();
 await client.connect(new StreamableHTTPClientTransport(new URL(url)));
 const call = async (name: string, args: Record<string, unknown> = {}) => {
-	const r = (await client.callTool({ name, arguments: args })) as { content: { text: string }[]; isError?: boolean };
+	const r = (await client.callTool({ name, arguments: args, _meta: { threadId } })) as { content: { text: string }[]; isError?: boolean };
 	if (r.isError) throw new Error(`${name}: ${r.content[0].text}`);
 	return JSON.parse(r.content[0].text);
 };
