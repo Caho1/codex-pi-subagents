@@ -1,10 +1,10 @@
-# Pi Agents
+# Pi Agent Swarm
 
 [English](https://github.com/Caho1/codex-pi-subagents/blob/main/README.md) | [简体中文](https://github.com/Caho1/codex-pi-subagents/blob/main/README.zh-CN.md)
 
-Pi Agents 为 [Codex](https://github.com/openai/codex) 和 [Pi](https://pi.dev) 提供多模型 AI 子智能体。本地 MCP 服务使用 Pi 已配置的模型并行运行 agent，保存会话，并提供 Web 面板。一个 npm 包包含 Pi 扩展、Codex 插件、服务和面板。
+Pi Agent Swarm 为 [Codex](https://github.com/openai/codex) 和 [Pi](https://pi.dev) 提供多模型 AI 子智能体。本地 MCP 服务使用 Pi 已配置的模型并行运行 agent，保存会话，并提供 Web 面板。一个 npm 包包含 Pi 扩展、Codex 插件、服务和面板。
 
-![Pi Agents 面板展示两个演示子智能体](https://raw.githubusercontent.com/Caho1/codex-pi-subagents/main/docs/panel-preview.jpg)
+![Pi Agent Swarm 面板展示两个演示子智能体](https://raw.githubusercontent.com/Caho1/codex-pi-subagents/main/docs/panel-preview.jpg)
 
 截图使用离线演示模型和示例数据。
 
@@ -30,7 +30,7 @@ Pi Agents 为 [Codex](https://github.com/openai/codex) 和 [Pi](https://pi.dev) 
 ### Pi
 
 ```sh
-pi install npm:@caho1/pi-agents
+pi install npm:@caho1/pi-agent-swarm
 ```
 
 启动或重新加载 Pi，然后让它委派任务。首次调用工具时，如果没有兼容的服务在运行，扩展会启动本地服务。Pi 会话结束后服务继续运行。安装 Pi 扩展不会自动安装 Codex 插件。
@@ -40,14 +40,14 @@ pi install npm:@caho1/pi-agents
 安装包并启动服务：
 
 ```sh
-npm install -g @caho1/pi-agents
+npm install -g @caho1/pi-agent-swarm
 pi-subagents-server
 ```
 
 在另一个终端从同一个包安装 Codex 插件：
 
 ```sh
-codex plugin marketplace add "$(npm root -g)/@caho1/pi-agents/codex-plugin"
+codex plugin marketplace add "$(npm root -g)/@caho1/pi-agent-swarm/codex-plugin"
 codex plugin add pi-subagents@pi-subagents-local
 ```
 
@@ -62,9 +62,32 @@ default_tools_approval_mode = "approve"
 
 这会改变该插件的 MCP 工具审批方式。如果希望逐次审批，不要添加这项配置。
 
+## 从 `@caho1/pi-agents` 升级
+
+Codex 插件名、MCP 地址和 agent 数据目录（`~/.codex-pi-subagents`）保持不变。升级前停止旧服务，完成后重新启动 `pi-subagents-server`。
+
+如果之前在 Pi 中安装了旧包，请替换 Pi 的包配置：
+
+```sh
+pi remove npm:@caho1/pi-agents
+pi install npm:@caho1/pi-agent-swarm
+```
+
+如果 Codex 插件来自全局安装的旧 npm 包，请替换插件市场来源和 npm 包：
+
+```sh
+codex plugin marketplace remove pi-subagents-local
+npm uninstall -g @caho1/pi-agents
+npm install -g @caho1/pi-agent-swarm
+codex plugin marketplace add "$(npm root -g)/@caho1/pi-agent-swarm/codex-plugin"
+codex plugin add pi-subagents@pi-subagents-local
+```
+
+修改插件配置后重启 Codex。新旧 npm 包提供相同的可执行命令，安装新包前请先卸载全局安装的旧包。
+
 ## 配置模型
 
-Pi Agents 使用 Pi 的 provider 和凭据配置。例如，Pi 的 DeepSeek provider 会从服务的环境变量中读取 `DEEPSEEK_API_KEY`：
+Pi Agent Swarm 使用 Pi 的 provider 和凭据配置。例如，Pi 的 DeepSeek provider 会从服务的环境变量中读取 `DEEPSEEK_API_KEY`：
 
 ```sh
 export DEEPSEEK_API_KEY="your-api-key"

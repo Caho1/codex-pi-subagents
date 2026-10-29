@@ -23,7 +23,7 @@ proxy.listen(0, '127.0.0.1');
 await once(proxy, 'listening');
 const proxyURL = `http://127.0.0.1:${proxy.address().port}`;
 const marker = join(root, 'result.json');
-const packagePath = join(install, 'node_modules/@caho1/pi-agents');
+const packagePath = join(install, 'node_modules/@caho1/pi-agent-swarm');
 writeFileSync(join(root, 'settings.json'), JSON.stringify({ packages: [packagePath] }));
 writeFileSync(join(root, 'probe.mjs'), `
 import extension from ${JSON.stringify(pathToFileURL(join(packagePath, 'extension.js')).href)};

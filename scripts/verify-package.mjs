@@ -12,10 +12,10 @@ const install = process.argv[2];
 if (!install) throw new Error('Pass the temporary npm install prefix');
 const root=mkdtempSync(join(tmpdir(),'pi-exec-')); const net=createServer(); net.listen(0,'127.0.0.1'); await once(net,'listening'); const port=net.address().port; await new Promise((resolve, reject) => net.close((error) => error ? reject(error) : resolve()));
 process.env.PI_SUBAGENTS_PORT=String(port); process.env.PI_SUBAGENTS_DATA=join(root,'data'); process.env.PI_CODING_AGENT_DIR=join(root,'config'); process.env.PI_SUBAGENTS_FAUX='1';
-const server=spawn(process.execPath,[join(install, 'node_modules/@caho1/pi-agents/server.js')],{env:process.env,stdio:'ignore'});
+const server=spawn(process.execPath,[join(install, 'node_modules/@caho1/pi-agent-swarm/server.js')],{env:process.env,stdio:'ignore'});
 try {
  for(let i=0;i<100;i++){try{if((await fetch(`http://127.0.0.1:${port}`)).ok)break}catch{} await new Promise(r=>setTimeout(r,100));}
- writeFileSync(join(root,'settings.json'),JSON.stringify({packages:[join(install, 'node_modules/@caho1/pi-agents')]}));
+ writeFileSync(join(root,'settings.json'),JSON.stringify({packages:[join(install, 'node_modules/@caho1/pi-agent-swarm')]}));
  const loader=new DefaultResourceLoader({cwd:root,agentDir:root,settingsManager:SettingsManager.create(root,root)});await loader.reload();const ex=loader.getExtensions().extensions[0];assert.equal(ex.tools.size,7);
  let id='session-a'; const ctx={cwd:root,sessionManager:{getSessionId:()=>id}};
  async function call(name,args){const r=await ex.tools.get(name).definition.execute('x',args,undefined,undefined,ctx);return JSON.parse(r.content[0].text)}

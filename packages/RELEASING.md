@@ -12,15 +12,15 @@ node scripts/build-package.mjs /tmp/pi-subagents-release
 npm pack /tmp/pi-subagents-release --dry-run
 ```
 
-在两个空目录中安装打包结果，分别验证 Pi 的 peer 依赖和 Codex 插件。以下文件名对应 `0.1.0`，升级版本后请替换：
+在两个空目录中安装打包结果，分别验证 Pi 的 peer 依赖和 Codex 插件。以下文件名对应 `0.1.2`，升级版本后请替换：
 
 ```sh
 npm pack /tmp/pi-subagents-release --pack-destination /tmp/pi-subagents-release
-npm install --legacy-peer-deps --prefix /tmp/pi-agents-pi-check /tmp/pi-subagents-release/caho1-pi-agents-0.1.0.tgz
-npm install --prefix /tmp/pi-agents-codex-check /tmp/pi-subagents-release/caho1-pi-agents-0.1.0.tgz
-node scripts/verify-package.mjs /tmp/pi-agents-pi-check
-node scripts/verify-package-proxy.mjs /tmp/pi-agents-pi-check
-python3 scripts/verify-codex-install.py /tmp/pi-agents-codex-check/node_modules/@caho1/pi-agents
+npm install --legacy-peer-deps --prefix /tmp/pi-agent-swarm-pi-check /tmp/pi-subagents-release/caho1-pi-agent-swarm-0.1.2.tgz
+npm install --prefix /tmp/pi-agent-swarm-codex-check /tmp/pi-subagents-release/caho1-pi-agent-swarm-0.1.2.tgz
+node scripts/verify-package.mjs /tmp/pi-agent-swarm-pi-check
+node scripts/verify-package-proxy.mjs /tmp/pi-agent-swarm-pi-check
+python3 scripts/verify-codex-install.py /tmp/pi-agent-swarm-codex-check/node_modules/@caho1/pi-agent-swarm
 ```
 
 验证脚本使用隔离数据目录和本地模拟模型。Codex 验证需要安装 `codex` CLI；代理验证需要 `lsof` 和 `ps`。

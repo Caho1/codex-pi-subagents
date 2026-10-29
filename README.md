@@ -1,10 +1,10 @@
-# Pi Agents
+# Pi Agent Swarm
 
 [English](https://github.com/Caho1/codex-pi-subagents/blob/main/README.md) | [简体中文](https://github.com/Caho1/codex-pi-subagents/blob/main/README.zh-CN.md)
 
-Pi Agents adds multi-model AI subagents to [Codex](https://github.com/openai/codex) and [Pi](https://pi.dev). Its local MCP server runs agents in parallel with Pi's configured models, stores their sessions, and provides a web panel. One npm package contains the Pi extension, Codex plugin, service, and panel.
+Pi Agent Swarm adds multi-model AI subagents to [Codex](https://github.com/openai/codex) and [Pi](https://pi.dev). Its local MCP server runs agents in parallel with Pi's configured models, stores their sessions, and provides a web panel. One npm package contains the Pi extension, Codex plugin, service, and panel.
 
-![Pi Agents panel showing two sample subagents](https://raw.githubusercontent.com/Caho1/codex-pi-subagents/main/docs/panel-preview.jpg)
+![Pi Agent Swarm panel showing two sample subagents](https://raw.githubusercontent.com/Caho1/codex-pi-subagents/main/docs/panel-preview.jpg)
 
 The screenshot uses the offline demo model and sample data.
 
@@ -30,7 +30,7 @@ The package has been tested with Pi SDK 1.4 on macOS. Windows and the standalone
 ### Pi
 
 ```sh
-pi install npm:@caho1/pi-agents
+pi install npm:@caho1/pi-agent-swarm
 ```
 
 Start or reload Pi, then ask it to delegate a task. On the first tool call, the extension starts the local service if a compatible service is not already running. The service continues running after the Pi session ends. Installing the Pi extension does not install the Codex plugin.
@@ -40,14 +40,14 @@ Start or reload Pi, then ask it to delegate a task. On the first tool call, the 
 Install the package and start the service:
 
 ```sh
-npm install -g @caho1/pi-agents
+npm install -g @caho1/pi-agent-swarm
 pi-subagents-server
 ```
 
 In another terminal, install the Codex plugin from the same package:
 
 ```sh
-codex plugin marketplace add "$(npm root -g)/@caho1/pi-agents/codex-plugin"
+codex plugin marketplace add "$(npm root -g)/@caho1/pi-agent-swarm/codex-plugin"
 codex plugin add pi-subagents@pi-subagents-local
 ```
 
@@ -62,9 +62,32 @@ default_tools_approval_mode = "approve"
 
 This changes approval behavior for this plugin's MCP tools. Leave it out if you prefer individual approvals.
 
+## Upgrade from `@caho1/pi-agents`
+
+The Codex plugin name, MCP endpoint, and agent data directory (`~/.codex-pi-subagents`) stay the same. Stop the old service before upgrading and start `pi-subagents-server` again afterward.
+
+If you installed the old package in Pi, replace its package entry:
+
+```sh
+pi remove npm:@caho1/pi-agents
+pi install npm:@caho1/pi-agent-swarm
+```
+
+If you installed the Codex plugin from the old global npm package, replace the marketplace source and package:
+
+```sh
+codex plugin marketplace remove pi-subagents-local
+npm uninstall -g @caho1/pi-agents
+npm install -g @caho1/pi-agent-swarm
+codex plugin marketplace add "$(npm root -g)/@caho1/pi-agent-swarm/codex-plugin"
+codex plugin add pi-subagents@pi-subagents-local
+```
+
+Restart Codex after changing its plugin configuration. The old and new npm packages provide the same executable, so remove the old global package before installing the new one.
+
 ## Configure models
 
-Pi Agents uses Pi's provider and credential configuration. For example, Pi's DeepSeek provider reads `DEEPSEEK_API_KEY` from the service's environment:
+Pi Agent Swarm uses Pi's provider and credential configuration. For example, Pi's DeepSeek provider reads `DEEPSEEK_API_KEY` from the service's environment:
 
 ```sh
 export DEEPSEEK_API_KEY="your-api-key"
@@ -154,7 +177,7 @@ Yes. Start the local MCP service and install the included Codex plugin. Each age
 
 Yes. Set the `model` for each agent when you start it. The models must be available through your Pi configuration.
 
-### Can I use Pi Agents without Codex?
+### Can I use Pi Agent Swarm without Codex?
 
 Yes. Install the package with `pi install` and use the extension directly in Pi. The first tool call starts the local service if needed.
 

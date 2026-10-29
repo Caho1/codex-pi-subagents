@@ -8,7 +8,7 @@ import { AgentManager } from '../src/manager.ts';
 const install=process.argv[2]; if (!install) throw new Error('Pass the temporary npm install prefix');
 const root=await mkdtemp(join(tmpdir(),'pi-child-'));const config=join(root,'config'),cwd=join(root,'cwd'),marker=join(root,'marker');await mkdir(config);await mkdir(cwd);await writeFile(marker,'');
 process.env.PI_CODING_AGENT_DIR=config;process.env.PI_TEST_MARKER=marker;process.env.PI_SUBAGENTS_CHILD='1';
-await writeFile(join(config,'settings.json'),JSON.stringify({packages:[join(install,'node_modules/@caho1/pi-agents')],extensions:[resolve('tests/fixtures/pi-extension.mjs')]}));
+await writeFile(join(config,'settings.json'),JSON.stringify({packages:[join(install,'node_modules/@caho1/pi-agent-swarm')],extensions:[resolve('tests/fixtures/pi-extension.mjs')]}));
 await writeFile(join(config,'mcp.json'),JSON.stringify({mcpServers:{fixture:{command:process.execPath,args:[resolve('tests/fixtures/pi-mcp.mjs')],exposure:'direct'}}}));
 const runtime=await ModelRuntime.create();const faux=fauxProvider({provider:'faux',models:[{id:'child'}],tokensPerSecond:10000});runtime.registerNativeProvider(faux.provider);const available=runtime.getAvailable.bind(runtime); runtime.getAvailable=(provider,options)=>available(provider ?? 'faux',options);const manager=new AgentManager(runtime,join(root,'data'));
 try {
