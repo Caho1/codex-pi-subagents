@@ -1,164 +1,203 @@
-# codex-pi-subagents
+# Pi Agents
 
-让 [Codex](https://github.com/openai/codex) 把子任务交给 [Pi](https://pi.dev) 执行：每个子 agent 可以用 Pi 支持的任意模型（DeepSeek、Anthropic、Gemini、OpenRouter、本地模型……），并提供一个实时 Web 面板，可在普通浏览器或 ChatGPT 桌面 app 的内置浏览器中打开。
+[English](https://github.com/Caho1/codex-pi-subagents/blob/main/README.md) | [简体中文](https://github.com/Caho1/codex-pi-subagents/blob/main/README.zh-CN.md)
 
-![panel](docs/panel-deepseek.png)
+Pi Agents adds multi-model AI subagents to [Codex](https://github.com/openai/codex) and [Pi](https://pi.dev). Its local MCP server runs agents in parallel with Pi's configured models, stores their sessions, and provides a web panel. One npm package contains the Pi extension, Codex plugin, service, and panel.
 
-```
-Codex ──MCP (streamable HTTP)──▶ codex-pi-subagents 常驻服务 ──Pi SDK──▶ AgentSession × N（各自的模型）
-                                        │
-                                        └── http://127.0.0.1:7788  Web 面板（SSE 实时）
-```
+![Pi Agents panel showing two sample subagents](https://raw.githubusercontent.com/Caho1/codex-pi-subagents/main/docs/panel-preview.jpg)
 
-## 为什么
+The screenshot uses the offline demo model and sample data.
 
-Codex 原生子 agent 只能沿用父会话的 model provider（自定义 agent 文件里的 `model_provider` 不生效）。本项目把子 agent 交给 Pi，因此每个子任务都能单独选模型、选 provider。
+## Features
 
-## 功能
+- **Choose a model per agent.** Use any model available through your Pi configuration, including configured custom providers. Set a working directory, thinking level, and tool preset for each agent.
+- **Delegate in Codex and Pi.** Both clients use the same seven tools and the same local service. The package includes a Codex plugin and a Pi extension with a delegation skill.
+- **Run independent tasks concurrently.** Start agents separately, then wait for all of them or for the first one to finish.
+- **Inspect work in the panel.** View agent status, responses, and tool activity at [http://127.0.0.1:7788](http://127.0.0.1:7788). Stop a running agent or choose the default model for new agents. Use `pi_get_agent` to inspect token usage and cost.
+- **Continue an existing agent.** Sessions and results are saved locally. A follow-up reopens the session with its previous context and reconnects its resources after the agent has finished.
+- **Use Pi tools.** The `coding` preset uses Pi's configured extensions and MCP servers, subject to Pi's project trust settings. The `read-only` preset provides `read`, `grep`, `find`, and `ls` without loading extensions or MCP tools.
 
-- MCP 工具：`pi_list_models`、`pi_spawn_agent`、`pi_wait`、`pi_get_agent`、`pi_send_followup`、`pi_abort`、`pi_list_agents`
-- 多个 Pi 会话在同一进程并发运行，每个会话可指定模型、thinking 等级、工作目录，工具可选 `coding` 或 `read-only` 两种预设
-- Codex 通过 MCP 请求元数据中的 `threadId` 关联子 agent：`pi_list_agents`、详情、等待、追问和中止只允许访问当前对话的 agent；缺少该字段时拒绝访问。`lastTask` 是最近接收的任务或追问，`codexThreadId` 是所属对话
-- Codex 对相关后续工作优先复用当前对话中工作目录、模型和工具权限合适的已完成 agent；需要不同配置或独立并行时新建。是否复用由 Codex 根据任务决定
-- 会话以 JSONL 持久化；服务重启后面板日志从 JSONL 恢复，follow-up 可以接着原来的上下文继续
-- `pi_wait` 返回最近一条回答；有多次追问时可用 `pi_get_agent` 查看此前记录。若前一轮失败且后续排队追问成功，最终状态仍保留 `error`；Pi 对同一轮的自动重试成功则可正常完成
-- Web 面板：查看 agent 列表、状态、token 和费用、实时输出、工具调用，并可中止任务；左下角可切换默认模型（`spawn` 未指定 model 时优先生效，持久化到 `--data` 目录）。追问由 Codex 通过 `pi_send_followup` 发起
-- Codex 插件：打包 MCP 配置和一个 skill，skill 告诉 Codex 何时以及如何委派给 Pi
-- `--faux` 离线假模型：不需要任何 API key 就能跑通整条链路
+## Requirements
 
-## 安装
+- Node.js 22.19 or later.
+- A Pi installation with at least one configured model and its credentials. See the [Pi documentation](https://pi.dev/docs/latest).
+- Codex, if you want to use the Codex plugin.
 
-Pi 和 Codex 的 npm 包安装方式见 [包说明](packages/pi/README.md)。以下是源码安装方式，需要 Node ≥ 22.19（Pi 1.4.0 的要求）。
+The package has been tested with Pi SDK 1.4 on macOS. Windows and the standalone Pi binary have not been verified. A global npm install can resolve a newer Pi SDK peer dependency.
 
-```bash
-git clone https://github.com/Caho1/codex-pi-subagents
-cd codex-pi-subagents
-npm install
-npm start                 # 使用 Pi 已配置的模型（环境变量或 ~/.pi/agent）
-npm start -- --faux       # 离线假模型，用于试跑
-npm run check             # 类型检查
-npm run smoke -- /path/to/project   # 通过 MCP 做冒烟测试（需要服务已启动）
-SMOKE_FAUX=1 MCP_URL=http://127.0.0.1:7789/mcp npm run smoke -- /path/to/project  # 仅选择 faux 模型，服务须以 --faux 启动
+## Install
+
+### Pi
+
+```sh
+pi install npm:@caho1/pi-agents
 ```
 
-参数：`--port 7788`、`--host 127.0.0.1`、`--data ~/.codex-pi-subagents`（agent 索引和会话 JSONL 的存放目录）、`--stdio`（同时在 stdio 上提供 MCP）。也可用环境变量 `PI_SUBAGENTS_PORT`、`PI_SUBAGENTS_DATA` 设置。
+Start or reload Pi, then ask it to delegate a task. On the first tool call, the extension starts the local service if a compatible service is not already running. The service continues running after the Pi session ends. Installing the Pi extension does not install the Codex plugin.
 
-使用 `--host 0.0.0.0` 并通过自定义域名访问时，添加 `--allow-host example.local`；多个域名可重复传入该参数。Host 和 Origin 校验用于限制浏览器跨站请求，不能替代身份认证。
+### Codex
 
-面板和默认 `pi_list_models` 只显示真实模型。服务启用 `--faux` 后，可调用 `pi_list_models` 并传入 `include_faux: true` 查看离线测试模型。
+Install the package and start the service:
 
-面板地址是 http://127.0.0.1:7788 ，每个工具结果里都带 `panel` 链接。
-
-旧版本创建且没有 `codexThreadId` 的历史 agent 无法可靠归属到某个 Codex 对话，因此不会出现在 Codex 的 MCP 列表中，也不能通过 MCP 操作；面板仍可查看它们。MCP 过滤依赖 Codex 客户端提供的元数据，是会话范围控制，不是身份认证；本地面板仍显示所有会话，且本服务无鉴权，不应向不可信客户端或公网开放。
-
-## 模型：DeepSeek
-
-Pi 内置 `deepseek` provider（OpenAI 兼容，`https://api.deepseek.com`），只读环境变量 `DEEPSEEK_API_KEY`，不需要 models.json：
-
-```bash
-export DEEPSEEK_API_KEY=...    # 不要写进任何文件
-npm start
+```sh
+npm install -g @caho1/pi-agents
+pi-subagents-server
 ```
 
-`pi_list_models` 会返回 `deepseek/deepseek-flash` 和 `deepseek/deepseek-v4-pro`（以 DeepSeek `/models` 接口实际返回为准）。其他 provider 见 Pi 文档 [providers.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md) 和 [models-configuration.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models-configuration.md)。
+In another terminal, install the Codex plugin from the same package:
 
-## 接入 Codex
-
-先启动本服务，然后任选下面一种方式。
-
-### 方式 A：插件（推荐）
-
-插件会带上 MCP 连接和 `pi-subagents` skill。
-
-```bash
-codex plugin marketplace add ./codex-plugin
-# => Added marketplace `pi-subagents-local` from …/codex-plugin
+```sh
+codex plugin marketplace add "$(npm root -g)/@caho1/pi-agents/codex-plugin"
 codex plugin add pi-subagents@pi-subagents-local
-# => Added plugin `pi-subagents` from marketplace `pi-subagents-local`
-#    Installed plugin root: ~/.codex/plugins/cache/pi-subagents-local/pi-subagents/0.1.0
 ```
 
-安装后 `~/.codex/config.toml` 会自动写入 `[plugins."pi-subagents@pi-subagents-local"] enabled = true`。插件自带的 MCP 工具默认需要逐次审批，在 `~/.codex/config.toml` 里放行（加在插件段之后）：
+Keep the service running while using the plugin. Restart Codex after changing its plugin configuration. The plugin connects to `http://127.0.0.1:7788/mcp` and includes a skill that guides delegation.
+
+Codex may ask for approval when using the plugin's MCP tools. To approve these calls by default, add the following to `~/.codex/config.toml`:
 
 ```toml
-[plugins."pi-subagents@pi-subagents-local"]
-enabled = true
-
 [plugins."pi-subagents@pi-subagents-local".mcp_servers.pi-subagents]
 default_tools_approval_mode = "approve"
 ```
 
-验证：`codex plugin list` 应出现 `pi-subagents-local`；服务运行时 `curl http://127.0.0.1:7788/mcp` 可达。改完 config 后重启 Codex 生效。
+This changes approval behavior for this plugin's MCP tools. Leave it out if you prefer individual approvals.
 
-### 方式 B：手动配置 mcp_servers
+## Configure models
+
+Pi Agents uses Pi's provider and credential configuration. For example, Pi's DeepSeek provider reads `DEEPSEEK_API_KEY` from the service's environment:
+
+```sh
+export DEEPSEEK_API_KEY="your-api-key"
+pi-subagents-server
+```
+
+Set the variable before starting the service or Pi. For other providers and custom endpoints, see Pi's [provider](https://pi.dev/docs/latest/providers) and [model configuration](https://pi.dev/docs/latest/models-configuration) documentation. Use `pi_list_models` to see the model IDs available to the service.
+
+## Try a task
+
+In Codex or Pi, ask for a review using separate agents:
+
+```text
+Review this repository with two Pi subagents in parallel. Ask one to look
+for correctness issues and the other to inspect test coverage. Give each a
+self-contained task and use read-only tools. Wait for both and summarize
+their findings.
+```
+
+You can also name an available `provider/model` in your request. For example, use `magpie/auto/GLM-5.3-Flash` if that model is configured and available in your Pi installation. Ask the parent agent to check `pi_list_models` when you are unsure of the model ID.
+
+Open the panel URL returned by a tool call to follow progress. The panel shows all local agents; Codex and Pi tool calls are scoped to their respective conversation or session IDs.
+
+## Tools
+
+| Tool | Purpose |
+| --- | --- |
+| `pi_list_models` | List models available through Pi. |
+| `pi_spawn_agent` | Start an agent with a task and optional model, working directory, thinking level, name, and tool preset. |
+| `pi_wait` | Wait for all specified agents or the first to finish. The default timeout is 120 seconds, with a maximum of 240 seconds. |
+| `pi_get_agent` | Inspect an agent's status, latest answer, and recent log. |
+| `pi_send_followup` | Continue an agent with its existing session context. A message sent while it is running is queued. |
+| `pi_abort` | Stop a running agent. |
+| `pi_list_agents` | List agents belonging to the current Codex conversation or Pi session. |
+
+`pi_wait` returns the latest answer. Use `pi_get_agent` to inspect earlier log entries after follow-ups. An aborted or failed agent needs further inspection before treating its work as complete.
+
+## Configuration and data
+
+The service listens on `127.0.0.1:7788` by default. It stores the agent index, session JSONL files, and the panel's default model under `~/.codex-pi-subagents`.
+
+For a standalone service, use `--port`, `--host`, `--data`, `--allow-host`, `--stdio`, and `--faux` as needed. `PI_SUBAGENTS_PORT` and `PI_SUBAGENTS_DATA` also set the port and data directory. For example:
+
+```sh
+pi-subagents-server --port 7789 --data "$HOME/.codex-pi-subagents-demo"
+```
+
+For Pi's automatically started service, set the environment variables before starting Pi. `PI_SUBAGENTS_DATA` affects a newly started service, not one already running. Use a separate data directory for each service running on a different port. The bundled Codex plugin uses port 7788; use a manual MCP configuration if your service uses another port.
+
+For a different port, add an MCP server entry to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.pi-subagents]
-url = "http://127.0.0.1:7788/mcp"
-tool_timeout_sec = 300             # pi_wait 最多阻塞 240 秒
-default_tools_approval_mode = "approve"
+url = "http://127.0.0.1:7789/mcp"
+tool_timeout_sec = 300
 ```
 
-这种方式没有 skill。需要在提示词或 AGENTS.md 里说明"用 pi_spawn_agent 委派子任务"。
+The manual MCP configuration does not install the delegation skill. Tell Codex to use the Pi tools in your prompt or in `AGENTS.md`.
 
-### 可选：只用 Pi，关掉原生子 agent
+If you use a custom host name, pass `--allow-host example.local`. Host and Origin checks restrict browser requests; they do not authenticate clients.
 
-```toml
-[agents]
-enabled = false
+## Security and current limits
+
+- The service and panel have no authentication. Keep them on localhost and do not expose them to untrusted clients or the public internet. The panel can show agents from all local conversations.
+- Conversation and session IDs scope MCP operations, but they are not an authentication mechanism.
+- Pi subagents do not inherit the Codex sandbox. The default `coding` preset can modify files and run tools. Use `read-only` for reviews that should not modify files.
+- Agents do not automatically receive the parent conversation. Include the goal, context, constraints, and expected output in each task.
+- Pi fills in the current project directory when an agent's `cwd` is omitted. Direct MCP calls default to the server's working directory, so specify an absolute `cwd` for Codex tasks.
+- Concurrent agents share their selected working directory. This project does not currently create separate Git worktrees for them.
+- Codex waits through `pi_wait`; the service does not wake Codex automatically when an agent finishes.
+- Legacy agents without a conversation ID remain visible in the panel but are not exposed through conversation-scoped MCP tools.
+
+## Troubleshooting
+
+- **No models listed.** Check the model and credentials in Pi, then call `pi_list_models` again. The offline demo models appear only when the service runs with `--faux` and the call includes `include_faux: true`.
+- **The Codex plugin cannot connect.** Confirm `pi-subagents-server` is running on port 7788 and restart Codex after installing the plugin.
+- **A Pi tool cannot start the service.** Check whether the configured port is already occupied. The Pi extension reuses a compatible service and rejects an unrelated service on that port.
+- **An agent cannot find project extensions.** Check Pi's project trust settings. The `read-only` preset intentionally does not load extensions or MCP tools.
+
+## Frequently asked questions
+
+### Can Codex use Pi models as subagents?
+
+Yes. Start the local MCP service and install the included Codex plugin. Each agent can use an available model from your Pi configuration.
+
+### Can agents use different models in parallel?
+
+Yes. Set the `model` for each agent when you start it. The models must be available through your Pi configuration.
+
+### Can I use Pi Agents without Codex?
+
+Yes. Install the package with `pi install` and use the extension directly in Pi. The first tool call starts the local service if needed.
+
+### Do agents run in the Codex sandbox?
+
+No. Pi agents use Pi's tool permissions. Use `read-only` for tasks that must not modify files. Separate Git worktrees are not created automatically.
+
+## Develop from source
+
+```sh
+git clone https://github.com/Caho1/codex-pi-subagents.git
+cd codex-pi-subagents
+npm install
+npm start
 ```
 
-不关的话两套工具并存。实测装了插件以后，即使原生子 agent 开着，Codex 收到"用子 agent 做 X"这类请求也会按 skill 选择 Pi。
+For an offline test, start the service with `npm start -- --faux` and run the smoke test against that service:
 
-### 可选：Codex 父模型也用 DeepSeek
-
-DeepSeek 支持 OpenAI Responses API，满足 Codex 唯一支持的 `wire_api = "responses"`：
-
-```toml
-model = "deepseek-flash"
-model_provider = "deepseek"
-
-[model_providers.deepseek]
-name = "DeepSeek"
-base_url = "https://api.deepseek.com/v1"
-env_key = "DEEPSEEK_API_KEY"
-wire_api = "responses"
+```sh
+SMOKE_FAUX=1 npm run smoke -- /path/to/project
+npm run check
+npm test
 ```
 
-## 用法示例
+The smoke test reads `README.md` in the selected working directory. See the [release instructions](https://github.com/Caho1/codex-pi-subagents/blob/main/packages/RELEASING.md) for building and checking the npm package.
 
-在 Codex 里：
+### Repository map
 
-```
-Review src/ for real bugs. Use two subagents in parallel — one on deepseek-v4-pro, one on deepseek-flash — both read-only. Wait for both and merge the findings.
-```
-
-Codex 会依次调用 `pi_list_models`、`pi_spawn_agent` ×2、`pi_wait`，然后汇总结果。运行过程可以在面板里实时查看。
-
-## 文件
-
-| 路径 | 作用 |
-|---|---|
-| `src/main.ts` | HTTP 服务：`/mcp`、面板、`/api`、SSE |
-| `src/manager.ts` | 用 Pi SDK 管理多个 AgentSession：事件、用量、follow-up、中止、持久化 |
-| `src/mcp.ts` | MCP 工具定义 |
-| `src/panel.html` | 面板（原生 JS，无需构建） |
-| `src/codex-avatars.js` / `src/codex-icons.js` | 从本机 Codex bundle 提取的头像和图标资产 |
-| `src/faux.ts` | 离线假模型（含 `SIMULATE_ERROR` 出错测试） |
-| `codex-plugin/` | Codex 插件和本地 marketplace |
-| `scripts/smoke.ts` | MCP 冒烟测试 |
-| `scripts/mock-responses.mjs` | 测试用的假 OpenAI Responses 端点，在没有模型凭据时充当 Codex 的父模型 |
-
-## 已知限制
-
-- 原型阶段：已在 Codex CLI 0.164.0 + Pi 1.4.0 + DeepSeek 上实测，未在 ChatGPT 桌面 app 的内置浏览器中验证。
-- Codex 通过阻塞的 `pi_wait` 等待结果，还没有在完成时主动唤醒 Codex（计划通过 App Server 的 `turn/start` 实现）。
-- 子 agent 不受 Codex 沙箱约束，权限由 Pi 的工具决定。用于探索或评审时请用 `tools: "read-only"`；多个子 agent 同时写文件没有隔离（尚无 worktree 支持）。
-- 子 agent 看不到 Codex 的对话，任务描述必须写完整。
-- 面板和 MCP 没有鉴权，只监听 127.0.0.1，不要绑定到公网地址。
-- MCP 工具无法主动打开浏览器标签页，面板需要用户点链接打开，或在桌面 app 里用 `@Browser` 打开。
-- Codex 对非 OpenAI 模型会提示 "Model metadata not found"，改用默认元数据。
+| Path | Purpose |
+| --- | --- |
+| `src/main.ts` | HTTP service, MCP endpoint, panel, and events. |
+| `src/manager.ts` | Pi sessions, agent state, follow-ups, and persistence. |
+| `src/pi-runtime.ts` | Pi SDK session and extension setup. |
+| `src/mcp.ts` | MCP tool definitions. |
+| `src/panel.html` | Local web panel. |
+| `src/codex-avatars.js`, `src/codex-icons.js` | Avatar and icon assets extracted from the local Codex bundle. |
+| `src/faux.ts` | Offline demo provider. |
+| `packages/pi/` | npm package manifest, Pi extension, and skill. |
+| `codex-plugin/` | Codex plugin and local marketplace. |
+| `scripts/` | Package build and verification scripts. |
 
 ## License
 
-MIT
+[MIT](https://github.com/Caho1/codex-pi-subagents/blob/main/LICENSE).
+
+The repository includes assets extracted from a local Codex bundle and OpenAI Sans fonts. Their redistribution terms have not been verified.

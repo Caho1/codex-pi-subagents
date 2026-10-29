@@ -1,16 +1,30 @@
 {
   "name": "@caho1/pi-agents",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
-  "description": "Pi native tools backed by the shared pi-subagents service",
+  "description": "Multi-model AI subagents for Codex and Pi with MCP, parallel execution, persistent sessions, and a local web panel",
   "license": "MIT",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "codex",
+    "pi-coding-agent",
+    "pi-extension",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "subagents",
+    "ai-agents",
+    "coding-agents",
+    "multi-agent",
+    "multi-model",
+    "agent-orchestration",
+    "local-dashboard"
   ],
   "engines": {
     "node": ">=22.19.0"
   },
   "pi": {
+    "image": "https://raw.githubusercontent.com/Caho1/codex-pi-subagents/main/docs/panel-preview.jpg",
     "extensions": [
       "./extension.js"
     ],
@@ -25,6 +39,7 @@
     "docs/panel-deepseek.png",
     "codex-plugin",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE",
     "skills"
   ],
