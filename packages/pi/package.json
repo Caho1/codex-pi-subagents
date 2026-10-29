@@ -1,0 +1,46 @@
+{
+  "name": "@caho1/pi-agents",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pi native tools backed by the shared pi-subagents service",
+  "license": "MIT",
+  "keywords": [
+    "pi-package"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./extension.js"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "files": [
+    "extension.js",
+    "server.js",
+    "dist",
+    "docs/panel-deepseek.png",
+    "codex-plugin",
+    "README.md",
+    "LICENSE",
+    "skills"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "dompurify": "^3.4.17",
+    "marked": "^18.1.2",
+    "mermaid": "^12.2.0",
+    "zod": "^4.6.7",
+    "undici": "^8.10.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "repository": "github:Caho1/codex-pi-subagents",
+  "bin": {
+    "pi-subagents-server": "./server.js"
+  }
+}

@@ -1,15 +1,16 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
-	createAgentSession,
+	type AgentSessionRuntime,
 	type ModelRuntime,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { openPiRuntime } from "./pi-runtime.ts";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 
 export type Status = "running" | "idle" | "error" | "aborted";
@@ -40,15 +41,16 @@ export interface AgentInfo {
 
 export interface LogLine { t: number; kind: string; text: string }
 
-interface Live { info: AgentInfo; session?: AgentSession; opening?: Promise<void>; log: LogLine[]; draft: string; lastError?: string; earlierTurnError?: string; settledAborted?: boolean; pending?: Set<Promise<void>>; preflightTail?: Promise<void>; activeSubmission?: Promise<void>; stopping?: Promise<void>; abortOnStart?: Promise<void>; revision: number }
+interface Live { info: AgentInfo; session?: AgentSession; runtime?: AgentSessionRuntime; opening?: Promise<void>; shutdown?: Promise<void>; log: LogLine[]; draft: string; lastError?: string; earlierTurnError?: string; settledAborted?: boolean; pending?: Set<Promise<void>>; preflightTail?: Promise<void>; activeSubmission?: Promise<void>; stopping?: Promise<void>; abortOnStart?: Promise<void>; revision: number }
 
-const READ_ONLY = ["read", "grep", "find", "ls"];
 const MAX_LOG = 500;
 
 export class AgentManager extends EventEmitter {
 	private agents = new Map<string, Live>();
 	private indexFile: string;
 	private preferredModel?: string;
+	private setups = new Set<Promise<AgentInfo>>();
+	private closing?: Promise<void>;
 
 	constructor(
 		private runtime: ModelRuntime,
@@ -94,6 +96,13 @@ export class AgentManager extends EventEmitter {
 	}
 
 	async spawn(opts: { task: string; codexThreadId?: string; model?: string; thinking?: ThinkingLevel; cwd?: string; name?: string; tools?: ToolPreset }) {
+		if (this.closing) throw new Error("manager is closing");
+		const setup = this.spawnInternal(opts);
+		this.setups.add(setup);
+		try { return await setup; } finally { this.setups.delete(setup); }
+	}
+
+	private async spawnInternal(opts: { task: string; codexThreadId?: string; model?: string; thinking?: ThinkingLevel; cwd?: string; name?: string; tools?: ToolPreset }) {
 		const model = await this.resolveModel(opts.model);
 		const id = randomUUID().slice(0, 8);
 		const cwd = opts.cwd ?? process.cwd();
@@ -115,14 +124,12 @@ export class AgentManager extends EventEmitter {
 			cost: 0,
 		};
 		const live: Live = { info, log: [], draft: "", revision: 0 };
-		const { session } = await createAgentSession({
-			cwd,
-			model,
-			modelRuntime: this.runtime,
-			thinkingLevel: info.thinking,
+		const runtime = await openPiRuntime({
+			cwd, model, modelRuntime: this.runtime, thinking: info.thinking, preset: info.tools,
 			sessionManager: SessionManager.create(cwd, join(this.dataDir, "sessions")),
-			tools: info.tools === "read-only" ? READ_ONLY : undefined,
 		});
+		live.runtime = runtime;
+		const session = runtime.session;
 		this.agents.set(id, live); // only after creation succeeded: no phantom "running" agents
 		this.attach(live, session);
 		this.run(live, opts.task);
@@ -130,9 +137,13 @@ export class AgentManager extends EventEmitter {
 	}
 
 	async followup(id: string, message: string) {
+		if (this.closing) throw new Error("manager is closing");
 		const live = this.get(id);
 		if (live.stopping) throw new Error("agent is stopping; retry after it stops");
+		if (live.shutdown) await live.shutdown;
+		if (this.closing) throw new Error("manager is closing");
 		if (!live.session) await (live.opening ??= this.reopen(live).finally(() => (live.opening = undefined)));
+		if (this.closing) throw new Error("manager is closing");
 		if (live.stopping) throw new Error("agent is stopping; retry after it stops");
 		this.run(live, message);
 		return live.info;
@@ -151,7 +162,10 @@ export class AgentManager extends EventEmitter {
 			await live.abortOnStart;
 			session.clearQueue();
 			await session.abort();
+			await session.waitForIdle();
+			const shutdown = this.shutdownRuntime(live, session);
 			this.update(live, { status: "aborted" });
+			await shutdown;
 		})();
 		try { await live.stopping; } catch (err) {
 			live.lastError = String((err as Error)?.message ?? err);
@@ -229,11 +243,46 @@ export class AgentManager extends EventEmitter {
 	}
 
 	private async settle(live: Live) {
-		await live.session!.waitForIdle();
-		if (live.stopping || live.pending?.size || live.info.status !== "running") return;
+		const session = live.session;
+		if (!session) return;
+		await session.waitForIdle();
+		if (live.session !== session || live.stopping || live.pending?.size || live.info.status !== "running") return;
+		const result = session.getLastAssistantText();
+		this.shutdownRuntime(live, session);
 		if (live.settledAborted) this.update(live, { status: "aborted" });
 		else if (live.earlierTurnError || live.lastError) this.update(live, { status: "error", error: live.earlierTurnError ?? live.lastError });
-		else this.update(live, { status: "idle", result: live.session!.getLastAssistantText() });
+		else this.update(live, { status: "idle", result });
+	}
+
+	/** 在广播结束状态前登记关闭操作，追问必须等待旧扩展退出。 */
+	private shutdownRuntime(live: Live, session: AgentSession): Promise<void> {
+		if (live.shutdown) return live.shutdown;
+		const runtime = live.runtime;
+		if (!runtime || live.session !== session) return Promise.resolve();
+		const shutdown = Promise.resolve().then(async () => {
+			await runtime.dispose();
+			const file = live.info.sessionFile;
+			if (file && !existsSync(file)) {
+				const temp = `${file}.${randomUUID()}.tmp`;
+				try {
+					session.exportToJsonl(temp);
+					try { linkSync(temp, file); }
+					catch (err) { if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err; }
+				} finally { if (existsSync(temp)) unlinkSync(temp); }
+			}
+			if (live.runtime === runtime && live.session === session) {
+				live.runtime = undefined;
+				live.session = undefined;
+			}
+			if (live.shutdown === shutdown) live.shutdown = undefined;
+		}).catch((err: unknown) => {
+			const error = `agent runtime shutdown failed: ${String(err)}`;
+			this.update(live, { status: "error", error });
+			throw new Error(error, { cause: err });
+		});
+		live.shutdown = shutdown;
+		void shutdown.catch(() => {});
+		return shutdown;
 	}
 
 	private attach(live: Live, session: AgentSession) {
@@ -324,15 +373,29 @@ export class AgentManager extends EventEmitter {
 		const header = JSON.parse(readFileSync(live.info.sessionFile, "utf8").split("\n")[0]);
 		if (header.type !== "session") throw new Error("invalid agent session header");
 		const model = await this.resolveModel(live.info.model);
-		const { session } = await createAgentSession({
-			cwd: live.info.cwd,
-			model,
-			modelRuntime: this.runtime,
-			thinkingLevel: live.info.thinking,
-			sessionManager: SessionManager.open(live.info.sessionFile),
-			tools: live.info.tools === "read-only" ? READ_ONLY : undefined,
+		const runtime = await openPiRuntime({
+			cwd: live.info.cwd, model, modelRuntime: this.runtime, thinking: live.info.thinking,
+			preset: live.info.tools, sessionManager: SessionManager.open(live.info.sessionFile),
 		});
+		live.runtime = runtime;
+		const session = runtime.session;
 		this.attach(live, session);
+	}
+
+	/** 停止接收新任务并等待已启动的会话完成关闭，重复调用复用同一操作。 */
+	close(): Promise<void> {
+		return this.closing ??= (async () => {
+			await Promise.allSettled([...this.setups]);
+			const results = await Promise.allSettled([...this.agents.values()].map(async (live) => {
+				await live.opening;
+				if (live.info.status === "running") await this.abort(live.info.id);
+				await Promise.allSettled([...live.pending ?? []]);
+				if (live.shutdown) await live.shutdown;
+				else if (live.session) await this.shutdownRuntime(live, live.session);
+			}));
+			const failed = results.find((result) => result.status === "rejected");
+			if (failed?.status === "rejected") throw failed.reason;
+		})();
 	}
 
 	private save() {

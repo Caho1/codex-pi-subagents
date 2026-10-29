@@ -28,7 +28,7 @@ Codex 原生子 agent 只能沿用父会话的 model provider（自定义 agent 
 
 ## 安装
 
-需要 Node ≥ 22.19（Pi 1.4.0 的要求）。
+Pi 和 Codex 的 npm 包安装方式见 [包说明](packages/pi/README.md)。以下是源码安装方式，需要 Node ≥ 22.19（Pi 1.4.0 的要求）。
 
 ```bash
 git clone https://github.com/Caho1/codex-pi-subagents

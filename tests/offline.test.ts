@@ -207,7 +207,7 @@ test("abort waits for SDK completion and wait cancellation leaves agent running"
   const gate = new Promise<void>((resolve) => { release = resolve; });
   let calls = 0;
   const info = { id: "test", name: "test", task: "", model: "", thinking: "off", cwd: dir, tools: "read-only", status: "running", createdAt: 1, updatedAt: 1, turns: 0, tokens: { input: 0, output: 0 }, cost: 0 };
-  const session = { clearQueue() {}, async abort() { calls++;
+  const session = { clearQueue() {}, async waitForIdle() {}, async abort() { calls++;
   await gate; }, isStreaming: true };
   (manager as any).agents.set(info.id, { info, session, log: [], draft: "", revision: 0 });
   const controller = new AbortController();

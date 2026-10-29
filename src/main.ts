@@ -2,7 +2,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { isIP } from "node:net";
 import { readFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 import { parseArgs } from "node:util";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -28,18 +29,20 @@ const allowedHosts = (opt["allow-host"] ?? []).map((host) => {
 });
 
 const log = (...a: unknown[]) => console.error("[pi-subagents]", ...a); // stdout is reserved for stdio MCP
-const runtime = await ModelRuntime.create();
-const faux = opt.faux ? installFaux(runtime) : undefined;
-const mgr = new AgentManager(runtime, opt.data!, faux?.feed, !!opt.faux);
+// 此标记只存在后台进程，防止子会话再次加载本包的委派工具。
+process.env.PI_SUBAGENTS_CHILD = "1";
+let mgr: AgentManager;
+const require = createRequire(import.meta.url);
+const vendor = (name: string, file: string) => join(dirname(require.resolve(name)), file);
 const urlHost = isIP(opt.host!) === 6 ? `[${opt.host}]` : opt.host;
 const panelUrl = `http://${urlHost}:${opt.port}`;
 const panelHtml = readFileSync(new URL("./panel.html", import.meta.url), "utf8");
 const codexAvatarsJs = readFileSync(new URL("./codex-avatars.js", import.meta.url), "utf8");
 const codexIconsJs = readFileSync(new URL("./codex-icons.js", import.meta.url), "utf8");
 const assetResponses: Record<string, { data: Buffer | string; type: string }> = {
-	"/vendor/marked.js": { data: readFileSync(new URL("../node_modules/marked/lib/marked.umd.js", import.meta.url)), type: "text/javascript; charset=utf-8" },
-	"/vendor/mermaid.js": { data: readFileSync(new URL("../node_modules/mermaid/dist/mermaid.min.js", import.meta.url)), type: "text/javascript; charset=utf-8" },
-	"/vendor/dompurify.js": { data: readFileSync(new URL("../node_modules/dompurify/dist/purify.min.js", import.meta.url)), type: "text/javascript; charset=utf-8" },
+	"/vendor/marked.js": { data: readFileSync(vendor("marked", "marked.umd.js")), type: "text/javascript; charset=utf-8" },
+	"/vendor/mermaid.js": { data: readFileSync(vendor("mermaid", "mermaid.min.js")), type: "text/javascript; charset=utf-8" },
+	"/vendor/dompurify.js": { data: readFileSync(vendor("dompurify", "purify.min.js")), type: "text/javascript; charset=utf-8" },
 	"/fonts/OpenAISans-Regular-c56711d328c4.woff2": { data: readFileSync(new URL("./fonts/OpenAISans-Regular-c56711d328c4.woff2", import.meta.url)), type: "font/woff2" },
 	"/fonts/OpenAISans-Medium-7b9c963f9063.woff2": { data: readFileSync(new URL("./fonts/OpenAISans-Medium-7b9c963f9063.woff2", import.meta.url)), type: "font/woff2" },
 	"/fonts/OpenAISans-Semibold-e259229c5327.woff2": { data: readFileSync(new URL("./fonts/OpenAISans-Semibold-e259229c5327.woff2", import.meta.url)), type: "font/woff2" },
@@ -94,6 +97,7 @@ function sse(res: ServerResponse) {
 
 const http = createServer(async (req, res) => {
 	try {
+		if (!mgr) { res.writeHead(503).end("service starting"); return; }
 		if (!allowedRequest(req)) { res.writeHead(403).end("forbidden host or origin"); return; }
 		const url = new URL(req.url ?? "/", panelUrl);
 		if (url.pathname === "/mcp") {
@@ -141,7 +145,29 @@ const http = createServer(async (req, res) => {
 	}
 });
 
-http.on("error", (e) => log(`panel/http not started: ${e.message}`));
-http.listen(Number(opt.port), opt.host, () => log(`panel ${panelUrl}  mcp ${panelUrl}/mcp${opt.faux ? "  (faux models)" : ""}`));
+// 先占用监听端口，再打开数据目录，避免竞争进程创建第二个管理器。
+await new Promise<void>((resolve, reject) => {
+	http.once("error", reject);
+	http.listen(Number(opt.port), opt.host, () => { http.off("error", reject); resolve(); });
+});
+http.on("error", (error) => log(`http error: ${error.message}`));
+const runtime = await ModelRuntime.create();
+const faux = opt.faux ? installFaux(runtime) : undefined;
+mgr = new AgentManager(runtime, opt.data!, faux?.feed, !!opt.faux);
+log(`panel ${panelUrl}  mcp ${panelUrl}/mcp${opt.faux ? "  (faux models)" : ""}`);
 
 if (opt.stdio) await createMcpServer(mgr, panelUrl).connect(new StdioServerTransport());
+
+// 先停止接收请求，再释放每个会话的扩展和 MCP 连接。
+let shutdown: Promise<void> | undefined;
+function closeService() {
+	return shutdown ??= (async () => {
+		http.close();
+		http.closeAllConnections();
+		await mgr.close();
+	})();
+}
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+	process.on(signal, () => { void closeService().then(() => process.exit(0), (error) => { log("shutdown failed", error); process.exit(1); }); });
+}
+if (opt.stdio) process.stdin.once("end", () => { void closeService(); });

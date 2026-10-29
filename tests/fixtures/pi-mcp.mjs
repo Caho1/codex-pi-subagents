@@ -1,0 +1,11 @@
+import { appendFileSync } from 'node:fs';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+appendFileSync(process.env.PI_TEST_MARKER, `mcp-start ${process.pid}\n`);
+const server = new Server({ name: 'fixture', version: '1' }, { capabilities: { tools: {} } });
+server.setRequestHandler(ListToolsRequestSchema, async () => { appendFileSync(process.env.PI_TEST_MARKER, 'mcp-listed\n'); return ({ tools: [{ name: 'echo', description: 'fixture', inputSchema: { type: 'object', properties: {} } }] }); });
+server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: 'text', text: 'mcp-result' }] }));
+const transport = new StdioServerTransport();
+process.stdin.on('end', () => { appendFileSync(process.env.PI_TEST_MARKER, `mcp-stop ${process.pid}\n`); });
+await server.connect(transport);
