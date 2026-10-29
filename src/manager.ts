@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { AgentTranscript } from "./transcript.ts";
 import { randomUUID } from "node:crypto";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
@@ -8,13 +10,16 @@ import {
 	type AgentSessionEvent,
 	type AgentSessionRuntime,
 	type ModelRuntime,
-	SessionManager,
+	SessionManager, SettingsManager, getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { openPiRuntime } from "./pi-runtime.ts";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 
 export type Status = "running" | "idle" | "error" | "aborted";
 export type ToolPreset = "coding" | "read-only";
+
+type NativeSessionPolicy = { mode: "private" } | { mode: "memory" } | { mode: "pi"; directory?: string };
+type SpawnOptions = { task: string; codexThreadId?: string; model?: string; thinking?: ThinkingLevel; cwd?: string; name?: string; tools?: ToolPreset; persistSession?: boolean; sessionDir?: string; projectDir?: string };
 
 export interface AgentInfo {
 	id: string;
@@ -37,11 +42,15 @@ export interface AgentInfo {
 	result?: string;
 	error?: string;
 	sessionFile?: string;
+	projectDir?: string;
+	transcriptFile?: string;
+	transcriptError?: string;
+	nativeSession?: NativeSessionPolicy;
 }
 
 export interface LogLine { t: number; kind: string; text: string }
 
-interface Live { info: AgentInfo; session?: AgentSession; runtime?: AgentSessionRuntime; opening?: Promise<void>; shutdown?: Promise<void>; log: LogLine[]; draft: string; lastError?: string; earlierTurnError?: string; settledAborted?: boolean; pending?: Set<Promise<void>>; preflightTail?: Promise<void>; activeSubmission?: Promise<void>; stopping?: Promise<void>; abortOnStart?: Promise<void>; revision: number }
+interface Live { info: AgentInfo; transcript?: AgentTranscript; transcriptFailed?: boolean; transcriptFailureMessage?: string; transcriptUnsubscribe?: () => void; unsubscribe?: () => void; memorySession?: SessionManager; session?: AgentSession; runtime?: AgentSessionRuntime; opening?: Promise<void>; shutdown?: Promise<void>; log: LogLine[]; draft: string; lastError?: string; earlierTurnError?: string; settledAborted?: boolean; pending?: Set<Promise<void>>; preflightTail?: Promise<void>; activeSubmission?: Promise<void>; stopping?: Promise<void>; abortOnStart?: Promise<void>; revision: number }
 
 const MAX_LOG = 500;
 
@@ -95,17 +104,29 @@ export class AgentManager extends EventEmitter {
 		return a;
 	}
 
-	async spawn(opts: { task: string; codexThreadId?: string; model?: string; thinking?: ThinkingLevel; cwd?: string; name?: string; tools?: ToolPreset }) {
+	async spawn(opts: SpawnOptions) {
 		if (this.closing) throw new Error("manager is closing");
 		const setup = this.spawnInternal(opts);
 		this.setups.add(setup);
 		try { return await setup; } finally { this.setups.delete(setup); }
 	}
 
-	private async spawnInternal(opts: { task: string; codexThreadId?: string; model?: string; thinking?: ThinkingLevel; cwd?: string; name?: string; tools?: ToolPreset }) {
+	private async spawnInternal(opts: SpawnOptions) {
+		if (opts.persistSession !== undefined && typeof opts.persistSession !== "boolean") throw new Error("persist_session must be a boolean");
+		if (opts.sessionDir !== undefined && typeof opts.sessionDir !== "string") throw new Error("session_dir must be a string");
+		if (opts.projectDir !== undefined && (typeof opts.projectDir !== "string" || !opts.projectDir.trim())) throw new Error("project_dir must be a non-empty string");
+		if (opts.sessionDir !== undefined && opts.persistSession !== true) throw new Error("session_dir requires persist_session=true");
+		if (opts.sessionDir !== undefined && !opts.sessionDir.trim()) throw new Error("session_dir must not be empty");
 		const model = await this.resolveModel(opts.model);
 		const id = randomUUID().slice(0, 8);
-		const cwd = opts.cwd ?? process.cwd();
+		const cwd = resolve(opts.cwd ?? process.cwd());
+		const projectDir = resolve(cwd, opts.projectDir ?? cwd);
+		const directory = opts.sessionDir === undefined ? undefined : resolve(cwd, opts.sessionDir === "~" ? homedir() : opts.sessionDir.startsWith("~/") ? join(homedir(), opts.sessionDir.slice(2)) : opts.sessionDir);
+		const configuredDirectory = opts.persistSession === true && directory === undefined
+			? process.env.PI_CODING_AGENT_SESSION_DIR || SettingsManager.create(cwd, getAgentDir()).getSessionDir()
+			: undefined;
+		const selectedDirectory = directory ?? (configuredDirectory ? resolve(cwd, configuredDirectory === "~" ? homedir() : configuredDirectory.startsWith("~/") ? join(homedir(), configuredDirectory.slice(2)) : configuredDirectory) : undefined);
+		const policy: NativeSessionPolicy = opts.persistSession === undefined ? { mode: "private" } : opts.persistSession ? { mode: "pi", directory: selectedDirectory } : { mode: "memory" };
 		const info: AgentInfo = {
 			id,
 			name: opts.name ?? `pi-${id}`,
@@ -114,7 +135,7 @@ export class AgentManager extends EventEmitter {
 			lastTask: opts.task,
 			model: `${model.provider}/${model.id}`,
 			thinking: opts.thinking ?? "medium",
-			cwd,
+			cwd, projectDir, nativeSession: policy,
 			tools: opts.tools ?? "coding",
 			status: "running",
 			createdAt: Date.now(),
@@ -124,14 +145,17 @@ export class AgentManager extends EventEmitter {
 			cost: 0,
 		};
 		const live: Live = { info, log: [], draft: "", revision: 0 };
-		const runtime = await openPiRuntime({
-			cwd, model, modelRuntime: this.runtime, thinking: info.thinking, preset: info.tools,
-			sessionManager: SessionManager.create(cwd, join(this.dataDir, "sessions")),
-		});
-		live.runtime = runtime;
-		const session = runtime.session;
-		this.agents.set(id, live); // only after creation succeeded: no phantom "running" agents
-		this.attach(live, session);
+		live.transcript = AgentTranscript.create(projectDir, id, cwd);
+		info.transcriptFile = live.transcript.file;
+		try {
+			const sessionManager = policy.mode === "memory" ? SessionManager.inMemory(cwd) : SessionManager.create(cwd, policy.mode === "private" ? join(this.dataDir, "sessions") : policy.directory);
+			if (policy.mode === "memory") live.memorySession = sessionManager;
+			live.runtime = await openPiRuntime({ cwd, model, modelRuntime: this.runtime, thinking: info.thinking, preset: info.tools,
+				sessionManager, onSession: (session) => this.attachTranscript(live, session) });
+			if (info.transcriptError) { await live.runtime.dispose(); throw new Error(info.transcriptError); }
+		} catch (error) { live.transcriptUnsubscribe?.(); live.transcript.close(); throw error; }
+		this.agents.set(id, live);
+		this.attach(live, live.runtime.session);
 		this.run(live, opts.task);
 		return info;
 	}
@@ -227,6 +251,7 @@ export class AgentManager extends EventEmitter {
 				streamingBehavior: "followUp",
 				preflightResult: (disposition) => {
 					if (disposition === "started") live.activeSubmission = submission;
+					if (disposition === "handled") this.record(live, { role: "handled", text });
 					releasePreflight();
 				},
 			});
@@ -249,7 +274,8 @@ export class AgentManager extends EventEmitter {
 		if (live.session !== session || live.stopping || live.pending?.size || live.info.status !== "running") return;
 		const result = session.getLastAssistantText();
 		this.shutdownRuntime(live, session);
-		if (live.settledAborted) this.update(live, { status: "aborted" });
+		if (live.transcriptFailed) this.update(live, { status: "error", error: live.transcriptFailureMessage });
+		else if (live.settledAborted) this.update(live, { status: "aborted" });
 		else if (live.earlierTurnError || live.lastError) this.update(live, { status: "error", error: live.earlierTurnError ?? live.lastError });
 		else this.update(live, { status: "idle", result });
 	}
@@ -260,7 +286,12 @@ export class AgentManager extends EventEmitter {
 		const runtime = live.runtime;
 		if (!runtime || live.session !== session) return Promise.resolve();
 		const shutdown = Promise.resolve().then(async () => {
-			await runtime.dispose();
+			try { await runtime.dispose(); } finally {
+				live.unsubscribe?.(); live.unsubscribe = undefined;
+				live.transcriptUnsubscribe?.(); live.transcriptUnsubscribe = undefined;
+				try { live.transcript?.close(); } catch (error) { this.transcriptFailure(live, error); }
+				live.transcript = undefined;
+			}
 			const file = live.info.sessionFile;
 			if (file && !existsSync(file)) {
 				const temp = `${file}.${randomUUID()}.tmp`;
@@ -285,10 +316,16 @@ export class AgentManager extends EventEmitter {
 		return shutdown;
 	}
 
+	private attachTranscript(live: Live, session: AgentSession) {
+		live.transcriptUnsubscribe = session.subscribe((event) => {
+			if (event.type === "message_end") this.record(live, event.message);
+		});
+	}
+
 	private attach(live: Live, session: AgentSession) {
 		live.session = session;
 		live.info.sessionFile = session.sessionFile;
-		session.subscribe((e) => this.onEvent(live, e));
+		live.unsubscribe = session.subscribe((e) => this.onEvent(live, e));
 	}
 
 	private onEvent(live: Live, e: AgentSessionEvent) {
@@ -340,6 +377,23 @@ export class AgentManager extends EventEmitter {
 		}
 	}
 
+	// 监听器不能抛错，否则 SDK 后续的原生消息追加会被中断。
+	private record<T extends { role: string }>(live: Live, message: T) {
+		try { live.transcript?.append(message); } catch (error) { this.transcriptFailure(live, error); }
+	}
+
+	private transcriptFailure(live: Live, error: unknown) {
+		live.transcriptFailed = true;
+		live.transcriptFailureMessage = `transcript write failed: ${String(error)}`;
+		live.info.transcriptError ??= live.transcriptFailureMessage;
+		try {
+			if (this.agents.has(live.info.id)) this.update(live, live.info.status === "running"
+				? { transcriptError: live.info.transcriptError }
+				: { status: "error", error: live.transcriptFailureMessage, transcriptError: live.info.transcriptError });
+		} catch {}
+		queueMicrotask(() => { if (live.session?.isStreaming) void live.session.abort().catch(() => {}); });
+	}
+
 	private push(live: Live, kind: string, text: string) {
 		const line = { t: Date.now(), kind, text };
 		live.log.push(line);
@@ -369,17 +423,27 @@ export class AgentManager extends EventEmitter {
 	}
 
 	private async reopen(live: Live) {
-		if (!live.info.sessionFile || !existsSync(live.info.sessionFile)) throw new Error("agent session file is missing");
-		const header = JSON.parse(readFileSync(live.info.sessionFile, "utf8").split("\n")[0]);
-		if (header.type !== "session") throw new Error("invalid agent session header");
-		const model = await this.resolveModel(live.info.model);
-		const runtime = await openPiRuntime({
-			cwd: live.info.cwd, model, modelRuntime: this.runtime, thinking: live.info.thinking,
-			preset: live.info.tools, sessionManager: SessionManager.open(live.info.sessionFile),
-		});
-		live.runtime = runtime;
-		const session = runtime.session;
-		this.attach(live, session);
+		const info = live.info;
+		if (info.nativeSession?.mode === "memory" && !live.memorySession) throw new Error(`内存会话在服务重启后无法恢复上下文，记录位于 ${info.transcriptFile ?? "未知路径"}`);
+		if (!live.memorySession && (!info.sessionFile || !existsSync(info.sessionFile))) throw new Error("agent session file is missing");
+		if (!info.transcriptFile) {
+			try {
+				info.projectDir ??= info.cwd;
+				info.transcriptFile = AgentTranscript.importLegacy(info.projectDir, info.id, info.cwd, info.sessionFile!);
+				this.save();
+			} catch (error) { info.error = `transcript import failed: ${String(error)}`; this.save(); throw new Error(info.error); }
+		}
+		live.transcript = AgentTranscript.open(info.transcriptFile, info.id, info.cwd);
+		live.transcriptFailed = false;
+		live.transcriptFailureMessage = undefined;
+		try {
+			const sessionManager = live.memorySession ?? SessionManager.open(info.sessionFile!);
+			const model = await this.resolveModel(info.model);
+			live.runtime = await openPiRuntime({ cwd: info.cwd, model, modelRuntime: this.runtime, thinking: info.thinking,
+				preset: info.tools, sessionManager, onSession: (session) => this.attachTranscript(live, session) });
+			if (live.transcriptFailed) { await live.runtime.dispose(); throw new Error(live.transcriptFailureMessage); }
+			this.attach(live, live.runtime.session);
+		} catch (error) { live.transcriptUnsubscribe?.(); live.transcriptUnsubscribe = undefined; live.unsubscribe?.(); live.unsubscribe = undefined; live.session = undefined; live.transcript.close(); live.transcript = undefined; throw error; }
 	}
 
 	/** 停止接收新任务并等待已启动的会话完成关闭，重复调用复用同一操作。 */
@@ -415,8 +479,25 @@ export class AgentManager extends EventEmitter {
 		for (const info of entries) {
 			if (info.status === "running") { info.status = "aborted"; info.error = "进程中断，请发送后续指令继续"; }
 			let log: LogLine[] = [];
-			try { if (info.sessionFile) log = logFromSession(info.sessionFile); }
-			catch (err) { info.status = "error"; info.error = `会话恢复失败: ${String(err)}`; }
+			if (info.transcriptFile) {
+				try {
+					log = logFromTranscript(info.transcriptFile);
+					AgentTranscript.validate(info.transcriptFile, info.id);
+				} catch (err) {
+					info.transcriptError ??= `transcript invalid: ${String(err)}`;
+					info.status = "error";
+					info.error = info.transcriptError;
+				}
+			}
+			if (info.nativeSession?.mode !== "memory" && info.sessionFile) {
+				try {
+					const nativeLog = logFromSession(info.sessionFile);
+					if (!info.transcriptFile) log = nativeLog;
+				} catch (err) {
+					info.status = "error";
+					info.error = `会话恢复失败: ${String(err)}`;
+				}
+			}
 			this.agents.set(info.id, { info, log, draft: "", revision: 0 });
 		}
 	}
@@ -439,6 +520,29 @@ function logFromSession(file: string): LogLine[] {
 			if (text) log.push({ t, kind: "assistant", text });
 			for (const b of blocks) if (b.type === "toolCall") log.push({ t, kind: "tool", text: `${b.name} ${JSON.stringify(b.arguments).slice(0, 300)}` });
 			if (e.message.errorMessage) log.push({ t, kind: "error", text: e.message.errorMessage });
+		}
+	}
+	return log.slice(-MAX_LOG);
+}
+
+function logFromTranscript(file: string): LogLine[] {
+	type Message = { role: string; text?: string; content?: string | { type: string; text?: string; name?: string; arguments?: unknown }[]; toolName?: string; isError?: boolean; errorMessage?: string };
+	const log: LogLine[] = [];
+	for (const line of readFileSync(file, "utf8").split("\n")) {
+		if (!line) continue;
+		let record: { message: Message; timestamp: string };
+		try { record = JSON.parse(line) as typeof record; } catch { break; }
+		const m = record.message;
+		const t = Date.parse(record.timestamp) || 0;
+		if (m.role === "handled") { log.push({ t, kind: "user", text: m.text ?? "" }); continue; }
+		if (m.role === "toolResult" && m.isError) { log.push({ t, kind: "tool-error", text: `${m.toolName} failed` }); continue; }
+		if (m.role !== "user" && m.role !== "assistant") continue;
+		const blocks = Array.isArray(m.content) ? m.content : [];
+		const text = typeof m.content === "string" ? m.content : blocks.filter((b) => b.type === "text").map((b) => b.text).join("");
+		if (text) log.push({ t, kind: m.role, text });
+		if (m.role === "assistant") {
+			for (const b of blocks) if (b.type === "toolCall") log.push({ t, kind: "tool", text: `${b.name} ${JSON.stringify(b.arguments ?? {}).slice(0, 300)}` });
+			if (m.errorMessage) log.push({ t, kind: "error", text: m.errorMessage });
 		}
 	}
 	return log.slice(-MAX_LOG);

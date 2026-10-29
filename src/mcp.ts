@@ -44,9 +44,12 @@ export function createMcpServer(mgr: AgentManager, panelUrl: string) {
 				cwd: z.string().optional().describe("Absolute working directory; default = server cwd. Pi sessions do not inherit the Codex sandbox"),
 				name: z.string().optional().describe("Short label shown in the panel"),
 				tools: z.enum(["coding", "read-only"]).optional().describe("read-only = read/grep/find/ls only"),
+				persist_session: z.boolean().optional().describe("Omit for server-private persistent session; true uses Pi session settings or session_dir; false keeps context in memory only and cannot resume after server restart"),
+				session_dir: z.string().optional().describe("Native session directory, absolute or relative to cwd, with ~ supported; requires persist_session=true"),
+				project_dir: z.string().optional().describe("Existing project directory for transcript storage; relative paths use agent cwd; defaults to agent cwd"),
 			},
 		},
-		async (args, extra) => json(view(await mgr.spawn({ ...args, codexThreadId: thread(extra._meta) }))),
+		async ({ persist_session, session_dir, project_dir, ...options }, extra) => json(view(await mgr.spawn({ ...options, persistSession: persist_session, sessionDir: session_dir, projectDir: project_dir, codexThreadId: thread(extra._meta) }))),
 	);
 
 	server.registerTool(

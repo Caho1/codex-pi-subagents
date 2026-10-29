@@ -17,7 +17,7 @@ const endpoint = () => `http://127.0.0.1:${process.env.PI_SUBAGENTS_PORT ?? "778
 const text = { type: "string" };
 const specs = [
   ["pi_list_models", "List available Pi models.", { include_faux: { type: "boolean" } }],
-  ["pi_spawn_agent", "Start a Pi subagent with a self-contained task. Use pi_wait to collect its result.", { task: text, model: text, thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }, cwd: text, name: text, tools: { type: "string", enum: ["coding", "read-only"] } }, ["task"]],
+  ["pi_spawn_agent", "Start a Pi subagent with a self-contained task. Use pi_wait to collect its result.", { task: text, model: text, thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }, cwd: text, name: text, persist_session: { type: "boolean", description: "Omit for server-private persistent session; true uses Pi settings or session_dir; false keeps context only until server restart." }, session_dir: { type: "string", description: "Native session directory, absolute or relative to cwd; supports ~ and requires persist_session=true." }, project_dir: { type: "string", description: "Existing project directory for transcripts; relative paths use agent cwd; defaults to the parent Pi project cwd." }, tools: { type: "string", enum: ["coding", "read-only"] } }, ["task"]],
   ["pi_wait", "Wait for subagents to finish.", { ids: { type: "array", items: text }, mode: { type: "string", enum: ["any", "all"] }, timeout_sec: { type: "number", minimum: 1, maximum: 240 } }],
   ["pi_get_agent", "Get a subagent result and recent log.", { id: text, log_lines: { type: "number", minimum: 0, maximum: 200 } }, ["id"]],
   ["pi_send_followup", "Send a follow-up to a subagent.", { id: text, message: text }, ["id", "message"]],
@@ -107,7 +107,7 @@ export default function extension(pi) {
       async execute(_id, args, signal, _update, ctx) {
         const client = await ensureService(signal);
         try {
-          const input = name === "pi_spawn_agent" ? { ...args, cwd: args.cwd ?? ctx.cwd } : args;
+          const input = name === "pi_spawn_agent" ? { ...args, cwd: args.cwd ?? ctx.cwd, project_dir: args.project_dir ?? ctx.cwd } : args;
           const result = await client.callTool({ name, arguments: input, _meta: { threadId: `pi:${ctx.sessionManager.getSessionId()}` } }, undefined, { signal, timeout: name === "pi_wait" ? 250000 : 60000 });
           if (result.isError) throw new Error(result.content.map((item) => item.text ?? "Tool error").join("\n"));
           return { content: result.content, details: {} };

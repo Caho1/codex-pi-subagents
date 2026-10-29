@@ -129,6 +129,20 @@ Open the panel URL returned by a tool call to follow progress. The panel shows a
 
 The service listens on `127.0.0.1:7788` by default. It stores the agent index, session JSONL files, and the panel's default model under `~/.codex-pi-subagents`.
 
+### Agent transcripts and native sessions
+
+Each agent writes finalized messages, including tool calls and results, to `<project_dir>/.pi-subagents/agent-transcripts/<agent-id>.jsonl`. The transcript is independent of the native Pi session and is ignored by Git locally.
+
+For direct MCP calls, `project_dir` defaults to the agent's `cwd`. The Pi extension uses the parent Pi session's working directory. Set `project_dir` explicitly when the transcript belongs to another project.
+
+Choose native session storage with the optional `pi_spawn_agent` parameters:
+
+- Omit `persist_session` to keep the existing private session under the service data directory.
+- Set `persist_session: true` to use Pi's session directory. Set `session_dir` as well to choose a directory.
+- Set `persist_session: false` to keep the Pi session in memory. Follow-ups retain context while the service is running. After a service restart, the transcript remains readable but the agent cannot resume its previous native session.
+
+`session_dir` requires `persist_session: true`. Existing agents keep their original native session files; their project transcripts are created when they are continued.
+
 For a standalone service, use `--port`, `--host`, `--data`, `--allow-host`, `--stdio`, and `--faux` as needed. `PI_SUBAGENTS_PORT` and `PI_SUBAGENTS_DATA` also set the port and data directory. For example:
 
 ```sh

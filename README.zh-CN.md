@@ -127,6 +127,20 @@ pi-subagents-server
 
 服务默认监听 `127.0.0.1:7788`。agent 索引、会话 JSONL 文件和面板默认模型保存在 `~/.codex-pi-subagents`。
 
+### Agent 对话记录和 Pi 原生会话
+
+每个 agent 的已完成消息，包括工具调用和结果，保存在 `<project_dir>/.pi-subagents/agent-transcripts/<agent-id>.jsonl`。对话记录独立于 Pi 原生会话，并通过本地 Git 忽略规则排除。
+
+直接调用 MCP 时，`project_dir` 默认为 agent 的 `cwd`。Pi 扩展默认使用父 Pi 会话的工作目录。需要把记录放在其他项目时，可显式设置 `project_dir`。
+
+通过 `pi_spawn_agent` 的可选参数选择原生会话存储方式：
+
+- 省略 `persist_session`，保留现有行为，将原生会话保存在服务的数据目录中。
+- 设置 `persist_session: true`，使用 Pi 的会话目录。还可以设置 `session_dir` 指定目录。
+- 设置 `persist_session: false`，只在内存中保存原生会话。服务运行期间追问仍保留上下文；服务重启后，对话记录仍可查看，但无法继续该原生会话。
+
+`session_dir` 需要与 `persist_session: true` 一起使用。现有 agent 保留原来的原生会话文件，并在继续追问时创建项目对话记录。
+
 独立启动服务时，可按需使用 `--port`、`--host`、`--data`、`--allow-host`、`--stdio` 和 `--faux` 参数。也可以通过 `PI_SUBAGENTS_PORT` 和 `PI_SUBAGENTS_DATA` 设置端口和数据目录。例如：
 
 ```sh

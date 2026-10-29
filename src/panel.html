@@ -525,7 +525,7 @@ function renderDetail() {
 		return;
 	}
 	$("title-slot").innerHTML = `<span class="title-copy-shell"><button type="button" class="back-button" id="back" aria-label="Back to subagents" title="Back to subagents">${icon("arrowLeft")}</button>${avatar(a)}<span class="title-copy"><span class="detail-name">${esc(a.name)}</span></span><span class="detail-model">${esc(a.model)} · ${esc(a.thinking)}</span></span>`;
-	$("log").innerHTML = `<div class="transcript">${renderTranscript()}</div>`; $("log").scrollTop = $("log").scrollHeight;
+	$("log").innerHTML = `<div class="transcript">${a.transcriptError ? `<div class="error-message" role="alert">对话记录写入失败，历史可能不完整：${esc(a.transcriptError)}</div>` : ""}${renderTranscript()}</div>`; $("log").scrollTop = $("log").scrollHeight;
 	renderMermaid();
 	markCodeOverflow();
 }

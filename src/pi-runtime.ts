@@ -4,14 +4,14 @@ import {
 	createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices,
 	createCodemodeExtension, createMcpExtension, createToolSearchExtension,
 	getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore, SettingsManager,
-	type AgentSessionRuntime, type ModelRuntime, type SessionManager,
+	type AgentSession, type AgentSessionRuntime, type ModelRuntime, type SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { ToolPreset } from "./manager.ts";
 
 /** 每个代理独立持有扩展和 MCP 生命周期，恢复会话也使用相同的初始化流程。 */
 export async function openPiRuntime(options: {
 	cwd: string; model: Model<Api>; thinking: ThinkingLevel; preset: ToolPreset;
-	modelRuntime: ModelRuntime; sessionManager: SessionManager;
+	modelRuntime: ModelRuntime; sessionManager: SessionManager; onSession?: (session: AgentSession) => void;
 }): Promise<AgentSessionRuntime> {
 	const agentDir = getAgentDir();
 	const factory = async ({ cwd, sessionManager }: { cwd: string; sessionManager: SessionManager; agentDir: string }) => {
@@ -62,6 +62,7 @@ export async function openPiRuntime(options: {
 	};
 	const runtime = await createAgentSessionRuntime(factory, { cwd: options.cwd, agentDir, sessionManager: options.sessionManager });
 	try {
+		options.onSession?.(runtime.session);
 		await runtime.session.bindExtensions({ mode: "rpc", onError: (error) => console.error("[pi-subagents] extension", error) });
 		return runtime;
 	} catch (error) {

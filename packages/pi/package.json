@@ -1,6 +1,6 @@
 {
   "name": "@caho1/pi-agent-swarm",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "Multi-model AI subagents for Codex and Pi with MCP, parallel execution, persistent sessions, and a local web panel",
   "license": "MIT",
